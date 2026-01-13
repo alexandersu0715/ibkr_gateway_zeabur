@@ -3,7 +3,7 @@ FROM ghcr.io/gnzsnz/ib-gateway:10.43.1a
 
 USER root
 
-# 設定環境變數 (移除 TWS_PATH，讓 IBC 自己找內建路徑)
+# 設定環境變數
 ENV IBC_VERSION=3.23.0 \
     IBC_PATH=/opt/ibc \
     DISPLAY=:99
@@ -24,24 +24,18 @@ RUN mkdir -p ${IBC_PATH} && \
 WORKDIR /app
 COPY . .
 
-# 4. 安裝 Python 策略需要的套件 (忽略系統衝突)
+# 4. 安裝 Python 套件
 RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages --ignore-installed
 
-# 5. 建立啟動腳本
+# 5. 建立自動偵測啟動腳本
 RUN cat <<'EOF' > /app/custom_entrypoint.sh
 #!/bin/bash
 set +e
 
-echo "--- 1. 準備 IBC 設定檔 ---"
-# 確保 Jts 資料夾存在 (解決報錯關鍵)
+echo "--- 1. 初始化目錄與注入帳密 ---"
 mkdir -p /root/Jts /root/ibc
-if [ -f /app/ibc/config.ini ]; then
-    cp /app/ibc/config.ini /root/ibc/config.ini
-else
-    cp /opt/ibc/config.ini /root/ibc/config.ini
-fi
+[ -f /app/ibc/config.ini ] && cp /app/ibc/config.ini /root/ibc/config.ini
 
-echo "--- 2. Python 注入帳密 ---"
 python3 -c "
 import os, re
 path = '/root/ibc/config.ini'
@@ -56,34 +50,42 @@ if os.path.exists(path):
     with open(path, 'w') as f: f.write(content)
 "
 
-echo "--- 3. 啟動顯示與 VNC ---"
+echo "--- 2. 啟動顯示環境 ---"
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
-# 同時啟動 VNC 桌面與 NoVNC 轉發
 Xvfb :99 -ac -screen 0 1024x768x16 &
 sleep 2
 fluxbox -display :99 &
 x11vnc -display :99 -forever -shared -nopw -bg
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-echo "--- 4. 啟動 IB Gateway (採用基礎映像檔預設路徑) ---"
-export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
+echo "--- 3. 自動偵測 TWS 版本並啟動 ---"
+# 掃描可能的安裝路徑來獲取版本號碼 (如 1043)
+POSSIBLE_TWS_PATH="/opt/ibgateway"
+TWS_VER=$(ls $POSSIBLE_TWS_PATH | grep -E '^[0-9]+' | head -n 1)
 
-# 這裡不強行指定 --tws-path，讓 IBC 自己抓 /opt/ibgateway 內的預設路徑
-/opt/ibc/scripts/ibcstart.sh 1043 --gateway \
+if [ -z "$TWS_VER" ]; then
+    echo "❌ 找不到版本目錄，嘗試預設值 1043"
+    TWS_VER="1043"
+fi
+
+echo "✅ 偵測到版本號: $TWS_VER，嘗試啟動..."
+
+/opt/ibc/scripts/ibcstart.sh $TWS_VER --gateway \
+  --tws-path=$POSSIBLE_TWS_PATH \
   --ibc-path=${IBC_PATH} \
   --ibc-ini=/root/ibc/config.ini \
   --user=${IB_USER} \
   --pw=${IB_PASS} \
   --mode=paper > /tmp/ibc_boot.log 2>&1 &
 
-echo "--- 5. 啟動 Python 策略 ---"
+echo "--- 4. 啟動 Python 策略 ---"
 (sleep 60 && python3 /app/main.py > /tmp/python_app.log 2>&1) &
 
-echo "--- 6. 系統監控 ---"
+echo "--- 5. 監控中 ---"
 (while true; do 
     echo "==== [$(date)] MONITORING ===="
     ps aux | grep -E 'java|python3' | grep -v grep
-    [ -f /tmp/ibc_boot.log ] && tail -n 5 /tmp/ibc_boot.log
+    [ -f /tmp/ibc_boot.log ] && tail -n 10 /tmp/ibc_boot.log
     sleep 30
 done) &
 
@@ -91,8 +93,5 @@ tail -f /dev/null
 EOF
 
 RUN chmod +x /app/custom_entrypoint.sh
-
-# 暴露 NoVNC 埠號
 EXPOSE 6080
-
 ENTRYPOINT ["/app/custom_entrypoint.sh"]
