@@ -1,47 +1,48 @@
-FROM python:3.12.7-slim
+# 1. 使用您指定的穩定基礎映像檔 (內建 10.43.1a)
+FROM ghcr.io/gnzsnz/ib-gateway:10.43.1a
 
-# 設定環境變數
-ENV IB_GATEWAY_VERSION=stable \
-    IBC_VERSION=3.20.0 \
-    TWS_PATH=/opt/ibgateway \
+# 切換到 root 進行系統層級更新
+USER root
+
+# 設定固定版本環境變數
+ENV IBC_VERSION=3.23.0 \
     IBC_PATH=/opt/ibc \
+    TWS_PATH=/opt/ibgateway \
     DISPLAY=:99
 
-# 1. 安裝系統套件
+# 2. 安裝 Python 策略環境與基礎工具
 RUN apt-get update && apt-get install -y \
-    openjdk-17-jre xvfb libxtst6 libxi6 libxrender1 libxinerama1 wget unzip procps \
-    net-tools x11vnc novnc websockify python3-numpy fluxbox xterm \
-    && ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html \
+    python3 python3-pip python3-numpy \
+    novnc websockify fluxbox xterm wget unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 安裝 IBC
+# 3. 手動安裝/覆蓋為 IBC 3.23.0
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
     unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
     chmod +x ${IBC_PATH}/*.sh ${IBC_PATH}/scripts/*.sh && \
     rm /tmp/ibc.zip
 
-# 3. 安裝 IB Gateway (修正網址並增加重試)
-RUN mkdir -p ${TWS_PATH} && \
-    wget --tries=3 --retry-connrefused -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh || \
-    wget --tries=3 --retry-connrefused -q https://github.com/IbcAlpha/ibc-docker/raw/master/stable/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
-    chmod +x /tmp/ibgateway-install.sh && \
-    /tmp/ibgateway-install.sh -q -d ${TWS_PATH} && \
-    rm /tmp/ibgateway-install.sh
-
+# 4. 設定 Python 工作目錄並安裝依賴
 WORKDIR /app
 COPY . .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages
 
-# 4. 建立 entrypoint.sh
-RUN cat <<'EOF' > /app/entrypoint.sh
+# 5. 建立啟動腳本 custom_entrypoint.sh
+RUN cat <<'EOF' > /app/custom_entrypoint.sh
 #!/bin/bash
 set +e
 
-mkdir -p /root/ibc /root/Jts
-[ -f /app/ibc/config.ini ] && cp /app/ibc/config.ini /root/ibc/config.ini
+echo "--- 1. 準備 IBC 設定檔 ---"
+mkdir -p /root/ibc
+# 優先使用專案內的 config.ini，若無則複製 IBC 預設值
+if [ -f /app/ibc/config.ini ]; then
+    cp /app/ibc/config.ini /root/ibc/config.ini
+else
+    cp /opt/ibc/config.ini /root/ibc/config.ini
+fi
 
-echo "--- 1. 注入帳密 ---"
+echo "--- 2. Python 安全注入帳密 (支援特殊字元) ---"
 python3 -c "
 import os, re
 path = '/root/ibc/config.ini'
@@ -52,23 +53,22 @@ if os.path.exists(path):
     content = re.sub(r'^IBUsername=.*', f'IBUsername={user}', content, flags=re.MULTILINE)
     content = re.sub(r'^IBPassword=.*', f'IBPassword={pw}', content, flags=re.MULTILINE)
     content = re.sub(r'^AcceptIncomingAPIConnections=.*', 'AcceptIncomingAPIConnections=yes', content, flags=re.MULTILINE)
+    # 針對 gnzsnz 映像檔可能需要的調整
+    content = re.sub(r'^IbApiPort=.*', 'IbApiPort=4002', content, flags=re.MULTILINE)
     with open(path, 'w') as f: f.write(content)
+    print('✅ IBC 3.23.0 Config 準備就緒')
 "
 
-echo "--- 2. 啟動顯示環境 ---"
-rm -f /tmp/.X99-lock
-Xvfb :99 -ac -screen 0 1024x768x16 +extension RANDR +extension RENDER &
-sleep 5
-fluxbox -display :99 &
-x11vnc -display :99 -forever -shared -nopw -bg
+echo "--- 3. 啟動顯示與 VNC 轉發 ---"
+# 清除 X 鎖定檔防止啟動失敗
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-echo "--- 3. 啟動 IB Gateway ---"
+echo "--- 4. 啟動 IB Gateway (指定版本 1043) ---"
 export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
-touch /tmp/ibc_boot.log
 
-# 使用 scripts 目錄下的啟動檔
-/opt/ibc/scripts/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
+# 該映像檔中 Gateway 10.43.1a 的 jars 通常位於 1043 目錄
+/opt/ibc/scripts/ibcstart.sh 1043 --gateway \
   --tws-path=${TWS_PATH} \
   --ibc-path=${IBC_PATH} \
   --ibc-ini=/root/ibc/config.ini \
@@ -76,19 +76,24 @@ touch /tmp/ibc_boot.log
   --pw=${IB_PASS} \
   --mode=paper > /tmp/ibc_boot.log 2>&1 &
 
-echo "--- 4. 啟動 Python ---"
-(sleep 60 && python3 main.py > /tmp/python_app.log 2>&1) &
+echo "--- 5. 啟動 Python 策略 ---"
+(sleep 60 && python3 /app/main.py > /tmp/python_app.log 2>&1) &
 
-echo "--- 5. 狀態監控 ---"
+echo "--- 6. 系統狀態輪詢 ---"
 (while true; do 
-    echo "==== IBC LOG STATUS ===="
-    [ -f /tmp/ibc_boot.log ] && tail -n 10 /tmp/ibc_boot.log
-    ps aux | grep java | grep -v grep
-    sleep 20
+    echo "==== [$(date)] MONITORING ===="
+    ps aux | grep -E 'java|python3' | grep -v grep
+    [ -f /tmp/ibc_boot.log ] && tail -n 5 /tmp/ibc_boot.log
+    sleep 30
 done) &
 
+# 保持容器運行
 tail -f /dev/null
 EOF
 
-RUN chmod +x /app/entrypoint.sh
-ENTRYPOINT ["/app/entrypoint.sh"]
+RUN chmod +x /app/custom_entrypoint.sh
+
+# 暴露 NoVNC 埠號
+EXPOSE 6080
+
+ENTRYPOINT ["/app/custom_entrypoint.sh"]
