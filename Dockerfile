@@ -71,8 +71,6 @@ EOF
 
 RUN chmod +x /app/entrypoint.sh
 ENTRYPOINT ["/app/entrypoint.sh"]
-
-
 # 修改 entrypoint.sh 的最後 tail 部分
 echo "--- 6. 容器啟動完成，開始監控日誌 ---"
 # 每 10 秒將 IBC 的啟動日誌最後 5 行噴到 Runtime Logs
