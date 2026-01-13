@@ -6,10 +6,11 @@ ENV IB_GATEWAY_VERSION=stable \
     IBC_PATH=/opt/ibc \
     DISPLAY=:99
 
-# 1. 安裝基礎套件 (加入 x11vnc 以供畫面查看)
+# 1. 安裝基礎套件 (加入 x11vnc, novnc 與建立首頁連結)
 RUN apt-get update && apt-get install -y \
     openjdk-17-jre xvfb libxtst6 libxi6 libxrender1 libxinerama1 wget unzip procps \
     x11vnc novnc websockify python3-numpy \
+    && ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. 下載並安裝 IBC
@@ -35,27 +36,28 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. 建立 entrypoint.sh (修正語法，將 VNC 指令正確編入腳本)
-# 修正後的 entrypoint.sh 段落
+# 4. 建立 entrypoint.sh
 RUN echo '#!/bin/bash\n\
 mkdir -p /root/ibc\n\
 if [ -f /app/ibc/config.ini ]; then cp /app/ibc/config.ini /root/ibc/config.ini; fi\n\
+\n\
+# 注入帳密\n\
 sed -i "s/IBUsername=.*/IBUsername=${IB_USER}/" /root/ibc/config.ini\n\
 sed -i "s/IBPassword=.*/IBPassword=${IB_PASS}/" /root/ibc/config.ini\n\
 \n\
+echo "1. 啟動虛擬螢幕與 VNC..."\n\
 Xvfb :99 -screen 0 1024x768x16 &\n\
 sleep 3\n\
-x11vnc -display :99 -forever -shared -nopw &\n\
+x11vnc -display :99 -forever -shared -nopw -xkb &\n\
 websockify --web /usr/share/novnc 6080 localhost:5900 &\n\
 \n\
-echo "啟動 IBC..."\n\
+echo "2. 啟動 IBC..."\n\
 /opt/ibc/scripts/displaybannerandlaunch.sh /opt/ibgateway /opt/ibc /root/ibc/config.ini ${IB_GATEWAY_VERSION} gateway ${IB_USER} ${IB_PASS} &\n\
 \n\
-echo "保持容器開啟供 VNC 除錯..."\n\
-# 即使 Python 失敗，這行也能保證容器不退出，讓你有時間看 VNC 畫面\n\
-sleep 3600 & \n\
+echo "3. 啟動 Python 策略 (背景執行)..."\n\
+python main.py &\n\
 \n\
-echo "啟動 Python 策略..."\n\
-python main.py' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+echo "4. 容器進入永續模式，請訪問 Networking 生成的網址查看畫面..."\n\
+tail -f /dev/null' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]

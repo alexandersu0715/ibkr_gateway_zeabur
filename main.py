@@ -92,3 +92,32 @@ async def run_bot_loop(ib):
         logger.info(f"合約確認成功: {contract}")
     except Exception as e:
         logger.error(f"Contract failed, trying fallback: {e}")
+        contract = Stock('SWRD', 'LSE', 'USD')
+        await ib.qualifyContractsAsync(contract)
+
+    current_date = get_utc_now().date()
+    traded_1030 = False
+    traded_1400 = False
+
+    logger.info(f"機器人啟動。當前 UTC 日期: {current_date}")
+
+    while True:
+        if not ib.isConnected():
+            raise ConnectionError("IB 連線遺失")
+
+        now = get_utc_now()
+        
+        # 跨日重置旗標
+        if now.date() != current_date:
+            current_date = now.date()
+            traded_1030 = False
+            traded_1400 = False
+            logger.info(f"新的一天開始: {current_date}，重置交易標記。")
+
+        # --- 時段 1: 10:30 UTC ---
+        if not traded_1030 and (10 <= now.hour < 14):
+            if now.hour == 10 and now.minute >= 30 or now.hour > 10:
+                cancel_time = now.replace(hour=13, minute=55, second=0)
+                logger.info("觸發 10:30 UTC 交易時段")
+                await place_and_manage_order(ib, contract, 5000, 5100, cancel_time)
+                traded_1030 =
