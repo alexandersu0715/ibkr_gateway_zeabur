@@ -30,28 +30,29 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. 建立 entrypoint.sh (改用 Python 注入帳密，避免 sed 衝突)
+# 4. # 5. 建立 entrypoint.sh (針對 IBC 3.20.0 語法修正)
 RUN cat <<'EOF' > /app/entrypoint.sh
 #!/bin/bash
 set -e
 mkdir -p /root/ibc
 
-echo "--- 注入帳密與準備環境 ---"
+echo "--- 正在透過 Python 安全注入帳號密碼 ---"
 python3 -c "
-import os
+import os, re
 config_path = '/app/ibc/config.ini'
 target_path = '/root/ibc/config.ini'
+user = os.getenv('IB_USER', '')
+pw = os.getenv('IB_PASS', '')
+
 if os.path.exists(config_path):
     with open(config_path, 'r') as f: content = f.read()
-    content = content.replace('YOUR_USERNAME', os.getenv('IB_USER', ''))
-    content = content.replace('YOUR_PASSWORD', os.getenv('IB_PASS', ''))
-    # 如果 config 裡本來就有設定，強制覆寫
-    import re
-    content = re.sub(r'IBUsername=.*', f'IBUsername={os.getenv(\"IB_USER\")}', content)
-    content = re.sub(r'IBPassword=.*', f'IBPassword={os.getenv(\"IB_PASS\")}', content)
+    content = content.replace('YOUR_USERNAME', user).replace('YOUR_PASSWORD', pw)
+    content = re.sub(r'^IBUsername=.*', f'IBUsername={user}', content, flags=re.MULTILINE)
+    content = re.sub(r'^IBPassword=.*', f'IBPassword={pw}', content, flags=re.MULTILINE)
     with open(target_path, 'w') as f: f.write(content)
 "
 
+echo "--- 啟動圖形化環境 ---"
 Xvfb :99 -screen 0 1024x768x16 &
 sleep 2
 fluxbox -display :99 &
@@ -60,16 +61,18 @@ x11vnc -display :99 -forever -shared -nopw -bg
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
 echo "--- 啟動 IBKR Gateway ---"
-/opt/ibc/scripts/displaybannerandlaunch.sh \
-  /opt/ibgateway /opt/ibc /root/ibc/config.ini \
-  ${IB_GATEWAY_VERSION} gateway ${IB_USER} ${IB_PASS} > /tmp/ibc_boot.log 2>&1 &
+# 修正重點：改用 ibcstart.sh 並使用具名參數符合 3.20.0 規範
+/opt/ibc/scripts/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
+  --tws-path=${TWS_PATH} \
+  --ibc-path=${IBC_PATH} \
+  --ibc-ini=/root/ibc/config.ini \
+  --user=${IB_USER} \
+  --pw=${IB_PASS} \
+  --mode=paper > /tmp/ibc_boot.log 2>&1 &
 
 echo "--- 啟動 Python 策略 ---"
 python3 main.py > /tmp/python_app.log 2>&1 &
 
-echo "--- 進入永續維護模式 ---"
+echo "--- 系統就緒，進入監控模式 ---"
 tail -f /dev/null
 EOF
-
-RUN chmod +x /app/entrypoint.sh
-ENTRYPOINT ["/app/entrypoint.sh"]
