@@ -1,79 +1,98 @@
+
 FROM python:3.12.7-slim
 
 # 設定環境變數
-ENV TWS_PATH=/opt/ibgateway \
+ENV IB_GATEWAY_VERSION=stable \
+    IBC_VERSION=3.20.0 \
+    TWS_PATH=/opt/ibgateway \
     IBC_PATH=/opt/ibc \
-    DISPLAY=:99 \
-    TWS_CONFIG_PATH=/root/Jts
+    DISPLAY=:99
 
-# 1. 安裝必要套件 (參考 gnzsnz/ib 的依賴)
+# 1. 安裝系統套件
 RUN apt-get update && apt-get install -y \
     openjdk-17-jre xvfb libxtst6 libxi6 libxrender1 libxinerama1 wget unzip procps \
-    net-tools x11vnc novnc websockify fluxbox \
+    net-tools x11vnc novnc websockify python3-numpy fluxbox xterm \
     && ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 下載並安裝最新穩定版 IBC & IB Gateway (Standalone)
-RUN mkdir -p ${IBC_PATH} ${TWS_PATH} ${TWS_CONFIG_PATH} && \
-    wget -q https://github.com/IbcAlpha/IBC/releases/download/3.20.0/IBCLinux-3.20.0.zip -O /tmp/ibc.zip && \
+# 2. 安裝 IBC
+RUN mkdir -p ${IBC_PATH} && \
+    wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
     unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
     chmod +x ${IBC_PATH}/*.sh ${IBC_PATH}/scripts/*.sh && \
-    wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
+    rm /tmp/ibc.zip
+
+# 3. 安裝 IB Gateway
+RUN mkdir -p ${TWS_PATH} && \
+    wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
     chmod +x /tmp/ibgateway-install.sh && \
     /tmp/ibgateway-install.sh -q -d ${TWS_PATH} && \
-    rm /tmp/ibgateway-install.sh /tmp/ibc.zip
+    rm /tmp/ibgateway-install.sh
 
 WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 3. 建立啟動腳本 (配合 gnzsnz 風格的環境變數處理)
+# 4. 建立 entrypoint.sh (包含強制 tail 與自動日誌輸出)
 RUN cat <<'EOF' > /app/entrypoint.sh
 #!/bin/bash
+# 關閉 set -e，確保腳本出錯也會執行到最後的 tail
 set +e
 
-# 準備 IBC config
-mkdir -p /root/ibc
-cp /app/ibc/config.ini /root/ibc/config.ini
+# 初始化目錄
+mkdir -p /root/ibc /root/Jts
+[ -f /app/ibc/config.ini ] && cp /app/ibc/config.ini /root/ibc/config.ini
 
-# 使用 Python 進行精準替換，避免特殊字元衝突
+echo "--- 1. Python 安全注入帳密 ---"
 python3 -c "
-import os
+import os, re
 path = '/root/ibc/config.ini'
-with open(path, 'r') as f: content = f.read()
-content = content.replace('YOUR_USERNAME', os.getenv('IB_USER', ''))
-content = content.replace('YOUR_PASSWORD', os.getenv('IB_PASS', ''))
-# 強制設定 API 埠號與自動登錄
-content = content.replace('AcceptIncomingAPIConnections=no', 'AcceptIncomingAPIConnections=yes')
-with open(path, 'w') as f: f.write(content)
+user = os.getenv('IB_USER', '')
+pw = os.getenv('IB_PASS', '')
+if os.path.exists(path):
+    with open(path, 'r') as f: content = f.read()
+    content = re.sub(r'^IBUsername=.*', f'IBUsername={user}', content, flags=re.MULTILINE)
+    content = re.sub(r'^IBPassword=.*', f'IBPassword={pw}', content, flags=re.MULTILINE)
+    content = re.sub(r'^AcceptIncomingAPIConnections=.*', 'AcceptIncomingAPIConnections=yes', content, flags=re.MULTILINE)
+    with open(path, 'w') as f: f.write(content)
+    print('✅ 設定檔注入成功')
 "
 
-# 啟動虛擬桌面
-rm -f /tmp/.X99-lock
-Xvfb :99 -ac -screen 0 1024x768x16 &
-sleep 3
+echo "--- 2. 啟動顯示環境 ---"
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+Xvfb :99 -ac -screen 0 1024x768x16 +extension RANDR +extension RENDER &
+sleep 5
 fluxbox -display :99 &
-x11vnc -display :99 -forever -shared -nopw -bg
+x11vnc -display :99 -forever -shared -nopw -bg -rfbport 5900
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-echo "--- 啟動 IB Gateway ---"
+echo "--- 3. 啟動 IB Gateway ---"
 export _JAVA_OPTIONS="-Xmx512M -Djava.awt.headless=false"
-# 直接呼叫 IBC 啟動器
-/opt/ibc/scripts/ibcstart.sh stable --gateway \
-  --ibc-path=${IBC_PATH} --ibc-ini=/root/ibc/config.ini \
-  --user=${IB_USER} --pw=${IB_PASS} --mode=paper > /tmp/ibc_boot.log 2>&1 &
+# 確保日誌檔案存在
+touch /tmp/ibc_boot.log
 
-echo "--- 啟動 Python 策略 ---"
+/opt/ibc/scripts/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
+  --tws-path=${TWS_PATH} \
+  --ibc-path=${IBC_PATH} \
+  --ibc-ini=/root/ibc/config.ini \
+  --user=${IB_USER} \
+  --pw=${IB_PASS} \
+  --mode=paper > /tmp/ibc_boot.log 2>&1 &
+
+echo "--- 4. 啟動 Python 策略 ---"
 (sleep 60 && python3 main.py > /tmp/python_app.log 2>&1) &
 
+echo "--- 5. 啟動自動日誌監控 (每 10 秒輸出到控制台) ---"
+(while true; do 
+    echo "==== IBC BOOT LOG UPDATE ===="
+    tail -n 10 /tmp/ibc_boot.log
+    sleep 10
+done) &
+
+echo "--- 6. 容器進入永續維護模式 ---"
+# 最後這行保證容器絕對不會退出
 tail -f /dev/null
 EOF
 
 RUN chmod +x /app/entrypoint.sh
 ENTRYPOINT ["/app/entrypoint.sh"]
-# 修改 entrypoint.sh 的最後 tail 部分
-echo "--- 6. 容器啟動完成，開始監控日誌 ---"
-# 每 10 秒將 IBC 的啟動日誌最後 5 行噴到 Runtime Logs
-(while true; do echo "--- IBC Log Update ---"; tail -n 5 /tmp/ibc_boot.log; sleep 10; done) &
-# 保持容器運行
-tail -f /dev/null
