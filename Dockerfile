@@ -3,10 +3,10 @@ FROM ghcr.io/gnzsnz/ib-gateway:10.43.1a
 
 USER root
 
-# 設定您要求的環境變數
+# 設定環境變數 (回歸官方預設路徑以避免路徑報錯)
 ENV IBC_VERSION=3.23.0 \
-    IBC_PATH=/root/ibc \
-    TWS_PATH=/root/Jts \
+    IBC_PATH=/opt/ibc \
+    TWS_PATH=/home/ibc/ibgateway \
     DISPLAY=:99
 
 # 2. 安裝 Python 與工具
@@ -15,38 +15,31 @@ RUN apt-get update && apt-get install -y \
     novnc websockify fluxbox xterm wget unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. 強制安裝 IBC 3.23.0 到 /root/ibc
+# 3. 強制安裝 IBC 3.23.0 到 /opt/ibc
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
     unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
     chmod +x ${IBC_PATH}/*.sh ${IBC_PATH}/scripts/*.sh && \
     rm /tmp/ibc.zip
 
-# 4. 強制對齊 TWS 路徑：將 /home/ibc/ibgateway 內容搬移或連結到 /root/Jts
-RUN mkdir -p /root/Jts && \
-    cp -rs /home/ibc/ibgateway/* /root/Jts/ || true
-
 WORKDIR /app
 COPY . .
 
-# 5. 安裝 Python 套件 (忽略系統衝突)
+# 4. 安裝 Python 套件 (忽略系統衝突)
 RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages --ignore-installed
 
-# 6. 建立啟動腳本
+# 5. 建立啟動腳本
 RUN cat <<'EOF' > /app/custom_entrypoint.sh
 #!/bin/bash
 set +e
 
-echo "--- 1. 初始化與帳密注入 ---"
-# 確保 /root/ibc/config.ini 存在
-if [ -f /app/ibc/config.ini ]; then
-    cp /app/ibc/config.ini /root/ibc/config.ini
-else
-    [ ! -f /root/ibc/config.ini ] && cp /root/ibc/admin/config.ini /root/ibc/config.ini
-fi
+echo "--- 1. 初始化目錄與帳密注入 ---"
+# 確保 Jts 與設定檔目錄存在於 IBC 預期的位置
+mkdir -p /home/ibc/Jts /root/ibc
+[ -f /app/ibc/config.ini ] && cp /app/ibc/config.ini /root/ibc/config.ini
 
-# 確保 jts.ini 存在於 /root/Jts (這是 IBC 啟動的關鍵檢查)
-[ ! -f /root/Jts/jts.ini ] && touch /root/Jts/jts.ini
+# 強制給予目錄讀寫權限，避免 Java 啟動失敗
+chmod -R 777 /home/ibc
 
 python3 -c "
 import os, re
@@ -70,13 +63,13 @@ fluxbox -display :99 &
 x11vnc -display :99 -forever -shared -nopw -bg
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-echo "--- 3. 啟動 IB Gateway (精確路徑模式) ---"
+echo "--- 3. 啟動 IB Gateway (指定回官方路徑) ---"
 export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
 
-# 根據 gnzsnz 映像檔結構，版本資料夾為 1043
-/root/ibc/scripts/ibcstart.sh 1043 --gateway \
-  --tws-path=/root/Jts \
-  --ibc-path=/root/ibc \
+# 關鍵：直接指向 /home/ibc/ibgateway，並使用 1043 版本
+/opt/ibc/scripts/ibcstart.sh 1043 --gateway \
+  --tws-path=/home/ibc/ibgateway \
+  --ibc-path=/opt/ibc \
   --ibc-ini=/root/ibc/config.ini \
   --user=${IB_USER} \
   --pw=${IB_PASS} \
@@ -85,7 +78,7 @@ export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
 echo "--- 4. 啟動 Python 策略 ---"
 (sleep 60 && python3 /app/main.py > /tmp/python_app.log 2>&1) &
 
-echo "--- 5. 監控 ---"
+echo "--- 5. 監控中 ---"
 (while true; do 
     echo "==== [$(date)] MONITORING ===="
     ps aux | grep -E 'java|python3' | grep -v grep
