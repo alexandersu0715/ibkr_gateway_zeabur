@@ -11,11 +11,12 @@ RUN apt-get update && apt-get install -y \
     openjdk-17-jre xvfb libxtst6 libxi6 libxrender1 libxinerama1 wget unzip procps \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 安裝 IBC (改用 -j 扁平化所有檔案到同一層，避免目錄嵌套)
+# 2. 安裝 IBC (保留結構，並強制遞迴授權)
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
-    unzip -o -j /tmp/ibc.zip -d ${IBC_PATH} && \
-    chmod +x ${IBC_PATH}/*.sh
+    unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
+    # 關鍵：給予 IBC 目錄下所有內容最高權限，確保內部的 scripts 資料夾也被授權
+    chmod -R 777 ${IBC_PATH}
 
 # 3. 安裝 IB Gateway
 RUN mkdir -p ${TWS_PATH} && \
@@ -28,7 +29,7 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. 強化版啟動腳本：自動定位 displaystart.sh
+# 4. 啟動腳本：回歸 IBC 標準啟動路徑
 RUN echo '#!/bin/bash\n\
 mkdir -p /root/ibc\n\
 if [ -f /app/ibc/config.ini ]; then cp /app/ibc/config.ini /root/ibc/config.ini; fi\n\
@@ -39,16 +40,9 @@ echo "啟動虛擬螢幕..."\n\
 Xvfb :99 -screen 0 1024x768x16 &\n\
 sleep 5\n\
 \n\
-echo "搜尋並啟動 IBC..."\n\
-# 自動尋找 displaystart.sh 的位置並執行\n\
-LAUNCHER=$(find /opt/ibc -name "displaystart.sh" | head -n 1)\n\
-if [ -z "$LAUNCHER" ]; then\n\
-    echo "錯誤：找不到 displaystart.sh，嘗試直接呼叫 gatewaystart.sh"\n\
-    LAUNCHER=$(find /opt/ibc -name "gatewaystart.sh" | head -n 1)\n\
-fi\n\
-\n\
-echo "執行腳本: $LAUNCHER"\n\
-$LAUNCHER /opt/ibgateway /opt/ibc /root/ibc/config.ini &\n\
+echo "啟動 IBC 與 IB Gateway..."\n\
+# 使用 IBC 在 Linux 上的標準啟動進入點\n\
+/opt/ibc/scripts/displaystart.sh /opt/ibgateway /opt/ibc /root/ibc/config.ini &\n\
 \n\
 echo "等待 Gateway 初始化 (90s)..."\n\
 sleep 90\n\
