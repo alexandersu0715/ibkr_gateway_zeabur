@@ -36,36 +36,26 @@ COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 4. 建立 entrypoint.sh (修正語法，將 VNC 指令正確編入腳本)
+# 修正後的 entrypoint.sh 段落
 RUN echo '#!/bin/bash\n\
 mkdir -p /root/ibc\n\
 if [ -f /app/ibc/config.ini ]; then cp /app/ibc/config.ini /root/ibc/config.ini; fi\n\
-\n\
 sed -i "s/IBUsername=.*/IBUsername=${IB_USER}/" /root/ibc/config.ini\n\
 sed -i "s/IBPassword=.*/IBPassword=${IB_PASS}/" /root/ibc/config.ini\n\
 \n\
-echo "啟動虛擬螢幕與 VNC 服務..."\n\
 Xvfb :99 -screen 0 1024x768x16 &\n\
-sleep 5\n\
+sleep 3\n\
+x11vnc -display :99 -forever -shared -nopw &\n\
+websockify --web /usr/share/novnc 6080 localhost:5900 &\n\
 \n\
-# 啟動 Web VNC (NoVNC) 以便從瀏覽器查看畫面\n\
-websockify --web /usr/share/novnc/ 6080 localhost:5900 &\n\
-
-x11vnc -display :99 -forever -shared -nopw -listen localhost -xkb &\n\
+echo "啟動 IBC..."\n\
+/opt/ibc/scripts/displaybannerandlaunch.sh /opt/ibgateway /opt/ibc /root/ibc/config.ini ${IB_GATEWAY_VERSION} gateway ${IB_USER} ${IB_PASS} &\n\
 \n\
-echo "準備啟動 IBC..."\n\
-/opt/ibc/scripts/displaybannerandlaunch.sh \
-  /opt/ibgateway \
-  /opt/ibc \
-  /root/ibc/config.ini \
-  ${IB_GATEWAY_VERSION} \
-  gateway \
-  ${IB_USER} \
-  ${IB_PASS} &\n\
-\n\
-echo "等待 Gateway 初始化 (90s)..."\n\
-sleep 90\n\
+echo "保持容器開啟供 VNC 除錯..."\n\
+# 即使 Python 失敗，這行也能保證容器不退出，讓你有時間看 VNC 畫面\n\
+sleep 3600 & \n\
 \n\
 echo "啟動 Python 策略..."\n\
-exec python main.py' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+python main.py' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]

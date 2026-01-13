@@ -91,4 +91,4 @@ async def run_bot_loop(ib):
         await ib.qualifyContractsAsync(contract)
         logger.info(f"合約確認成功: {contract}")
     except Exception as e:
-        logger.error(f"合
+        logger.error(f"Contract failed, trying fallback: {e}")
