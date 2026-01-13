@@ -1,6 +1,5 @@
 FROM python:3.12.7-slim
 
-# 設定環境變數
 ENV IB_GATEWAY_VERSION=stable \
     IBC_VERSION=3.20.0 \
     TWS_PATH=/opt/ibgateway \
@@ -14,18 +13,16 @@ RUN apt-get update && apt-get install -y \
     && ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 安裝 IBC (修正解壓路徑)
+# 2. 安裝 IBC (確保腳本都在 IBC_PATH 下)
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
     unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
     chmod +x ${IBC_PATH}/*.sh && \
-    # 確保 scripts 目錄也具備執行權限 (如果有的話)
-    find ${IBC_PATH} -name "*.sh" -exec chmod +x {} + && \
     rm /tmp/ibc.zip
 
-# 3. 安裝 IB Gateway (確保下載網址正確)
+# 3. 安裝 IB Gateway
 RUN mkdir -p ${TWS_PATH} && \
-    wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
+    wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
     chmod +x /tmp/ibgateway-install.sh && \
     /tmp/ibgateway-install.sh -q -d ${TWS_PATH} && \
     rm /tmp/ibgateway-install.sh
@@ -34,18 +31,15 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ... (前段安裝步驟保持不變) ...
-
-# 4. 建立 entrypoint.sh (針對 IBC 3.20.0 語法精確修正)
+# 4. 建立 entrypoint.sh
 RUN cat <<'EOF' > /app/entrypoint.sh
 #!/bin/bash
 set +e
 
-# 初始化目錄
 mkdir -p /root/ibc /root/Jts
 [ -f /app/ibc/config.ini ] && cp /app/ibc/config.ini /root/ibc/config.ini
 
-echo "--- 1. Python 安全注入帳密 ---"
+echo "--- 1. 注入帳密 ---"
 python3 -c "
 import os, re
 path = '/root/ibc/config.ini'
@@ -64,13 +58,16 @@ rm -f /tmp/.X99-lock
 Xvfb :99 -ac -screen 0 1024x768x16 +extension RANDR +extension RENDER &
 sleep 5
 fluxbox -display :99 &
-x11vnc -display :99 -forever -shared -nopw -bg -rfbport 5900
+x11vnc -display :99 -forever -shared -nopw -bg
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-echo "--- 3. 啟動 IBKR Gateway ---"
-export _JAVA_OPTIONS="-Xmx512M -Djava.awt.headless=false"
-# 修正關鍵：改用 ibcstart.sh 並加入 --gateway 標籤
-/opt/ibc/scripts/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
+echo "--- 3. 啟動 IB Gateway ---"
+# 限制記憶體防止被 Zeabur 殺掉，並增加除錯輸出
+export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
+touch /tmp/ibc_boot.log
+
+# 這裡使用絕對路徑並確保指向正確的啟動腳本
+${IBC_PATH}/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
   --tws-path=${TWS_PATH} \
   --ibc-path=${IBC_PATH} \
   --ibc-ini=/root/ibc/config.ini \
@@ -78,17 +75,19 @@ export _JAVA_OPTIONS="-Xmx512M -Djava.awt.headless=false"
   --pw=${IB_PASS} \
   --mode=paper > /tmp/ibc_boot.log 2>&1 &
 
-echo "--- 4. 啟動 Python 策略 ---"
+echo "--- 4. 啟動 Python ---"
 (sleep 60 && python3 main.py > /tmp/python_app.log 2>&1) &
 
-echo "--- 5. 自動日誌更新 ---"
+echo "--- 5. 輪詢日誌 ---"
 (while true; do 
-    echo "==== IBC BOOT LOG UPDATE ===="
-    tail -n 15 /tmp/ibc_boot.log 2>/dev/null
-    sleep 15
+    echo "==== IBC LOG STATUS ===="
+    if [ -f /tmp/ibc_boot.log ]; then
+        tail -n 10 /tmp/ibc_boot.log
+    fi
+    ps aux | grep java | grep -v grep
+    sleep 20
 done) &
 
-echo "--- 6. 永續模式開啟 ---"
 tail -f /dev/null
 EOF
 
