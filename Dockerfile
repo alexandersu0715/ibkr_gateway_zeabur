@@ -21,13 +21,13 @@ RUN apt-get update && apt-get install -y \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. 安裝 IBC (IB Controller)
+# 3. 安裝 IBC (修正解壓縮邏輯，確保 scripts 資料夾直接在 /root/ibc 下)
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
-    unzip /tmp/ibc.zip -d ${IBC_PATH} && \
-    chmod +x ${IBC_PATH}/scripts/*.sh && \
+    unzip -j /tmp/ibc.zip -d ${IBC_PATH} && \
+    # 注意：-j 會扁平化檔案，所以我們要手動建立 scripts 資料夾或修正路徑
     chmod +x ${IBC_PATH}/*.sh
-
+	
 # 4. 安裝 IB Gateway (自動下載最新穩定版安裝腳本)
 RUN mkdir -p /opt/ibgateway && \
     wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
@@ -40,17 +40,12 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 6. 建立強化版啟動腳本 entrypoint.sh
-# 此腳本會：
-# a. 將 Zeabur 的環境變數 $IB_USER, $IB_PASS 寫入 IBC 設定檔
-# b. 啟動虛擬顯示器
-# c. 啟動 IBC 代理登入
-# d. 執行你的 SWRD 購買策略
+# 6. 修正啟動腳本 entrypoint.sh 中的路徑
 RUN echo '#!/bin/bash\n\
-# 確保設定目錄存在\n\
 mkdir -p /root/ibc\n\
-cp /app/ibc/config.ini /root/ibc/config.ini\n\
-# 動態注入帳密\n\
+# 這裡假設你的專案裡有 ibc/config.ini\n\
+if [ -f /app/ibc/config.ini ]; then cp /app/ibc/config.ini /root/ibc/config.ini; fi\n\
+\n\
 sed -i "s/IBUsername=.*/IBUsername=${IB_USER}/" /root/ibc/config.ini\n\
 sed -i "s/IBPassword=.*/IBPassword=${IB_PASS}/" /root/ibc/config.ini\n\
 \n\
@@ -59,10 +54,11 @@ Xvfb :99 -screen 0 1024x768x16 &\n\
 sleep 5\n\
 \n\
 echo "啟動 IBC 與 IB Gateway..."\n\
-${IBC_PATH}/scripts/displaystart.sh &\n\
+# 關鍵修正：直接執行腳本，路徑需與安裝時一致\n\
+/root/ibc/displaystart.sh &\n\
 \n\
-echo "等待 Gateway 初始化 (60s)..."\n\
-sleep 60\n\
+echo "等待 Gateway 初始化 (90s)..."\n\
+sleep 90\n\
 \n\
 echo "啟動 Python 策略程式..."\n\
 python main.py' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
