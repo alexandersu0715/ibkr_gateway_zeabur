@@ -30,13 +30,16 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. # 5. 建立 entrypoint.sh (針對 IBC 3.20.0 語法修正)
+# 4. 
+# 5. 建立 entrypoint.sh (整合 Github 社群最佳實踐)
 RUN cat <<'EOF' > /app/entrypoint.sh
 #!/bin/bash
-set -e
+# 不使用 set -e 避免中間小警告導致整個容器退出
+# set -e 
+
 mkdir -p /root/ibc
 
-echo "--- 正在透過 Python 安全注入帳號密碼 ---"
+echo "--- 1. 注入帳號密碼 ---"
 python3 -c "
 import os, re
 config_path = '/app/ibc/config.ini'
@@ -52,27 +55,44 @@ if os.path.exists(config_path):
     with open(target_path, 'w') as f: f.write(content)
 "
 
-echo "--- 啟動圖形化環境 ---"
-Xvfb :99 -screen 0 1024x768x16 &
-sleep 2
+echo "--- 2. 啟動 Xvfb 與 視窗管理員 ---"
+# 參考 Github Issue: 確保 X 伺服器有足夠時間初始化
+rm -f /tmp/.X99-lock
+Xvfb :99 -ac -screen 0 1024x768x16 +extension RANDR &
+sleep 5
+
 fluxbox -display :99 &
 sleep 2
-x11vnc -display :99 -forever -shared -nopw -bg
+
+echo "--- 3. 啟動 VNC 服務 ---"
+x11vnc -display :99 -forever -shared -nopw -bg -rfbport 5900
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-echo "--- 啟動 IBKR Gateway ---"
-# 修正重點：改用 ibcstart.sh 並使用具名參數符合 3.20.0 規範
+echo "--- 4. 啟動 IBKR Gateway ---"
+# 針對 GitHub 討論提到的路徑與權限問題：
+# 增加記憶體限制參數防止 Java 被 Zeabur 殺掉
+export _JAVA_OPTIONS="-Xmx512M -Xms256M"
+
 /opt/ibc/scripts/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
   --tws-path=${TWS_PATH} \
   --ibc-path=${IBC_PATH} \
   --ibc-ini=/root/ibc/config.ini \
   --user=${IB_USER} \
   --pw=${IB_PASS} \
-  --mode=paper > /tmp/ibc_boot.log 2>&1 &
+  --mode=paper \
+  --on2fatimeout=exit > /tmp/ibc_boot.log 2>&1 &
 
-echo "--- 啟動 Python 策略 ---"
-python3 main.py > /tmp/python_app.log 2>&1 &
+echo "--- 5. 啟動 Python 策略 ---"
+# 增加延遲，確保 Gateway 先佔用 4002 端口
+(sleep 30 && python3 main.py > /tmp/python_app.log 2>&1) &
 
-echo "--- 系統就緒，進入監控模式 ---"
-tail -f /dev/null
+echo "--- 6. 容器永續監控模式 ---"
+# 循環檢查關鍵進程，若 Xvfb 消失才退出，否則永遠保持 Running
+while true; do
+  if ! pgrep Xvfb > /dev/null; then
+    echo "Xvfb 意外終止，退出容器。"
+    exit 1
+  fi
+  sleep 60
+done
 EOF
