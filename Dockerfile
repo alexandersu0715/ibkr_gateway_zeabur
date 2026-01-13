@@ -10,7 +10,7 @@ ENV IBC_VERSION=3.23.0 \
     TWS_PATH=/opt/ibgateway \
     DISPLAY=:99
 
-# 2. 安裝 Python 策略環境與基礎工具
+# 2. 安裝 Python 策略環境與基礎工具 (增加 python3-venv 保持環境整潔)
 RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-numpy \
     novnc websockify fluxbox xterm wget unzip \
@@ -23,10 +23,12 @@ RUN mkdir -p ${IBC_PATH} && \
     chmod +x ${IBC_PATH}/*.sh ${IBC_PATH}/scripts/*.sh && \
     rm /tmp/ibc.zip
 
-# 4. 設定 Python 工作目錄並安裝依賴
+# 4. 設定工作目錄並複製專案內容
 WORKDIR /app
 COPY . .
-RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages
+
+# 修正重點：使用 --ignore-installed 避開 numpy 卸載失敗的問題
+RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages --ignore-installed
 
 # 5. 建立啟動腳本 custom_entrypoint.sh
 RUN cat <<'EOF' > /app/custom_entrypoint.sh
@@ -35,7 +37,6 @@ set +e
 
 echo "--- 1. 準備 IBC 設定檔 ---"
 mkdir -p /root/ibc
-# 優先使用專案內的 config.ini，若無則複製 IBC 預設值
 if [ -f /app/ibc/config.ini ]; then
     cp /app/ibc/config.ini /root/ibc/config.ini
 else
@@ -53,21 +54,18 @@ if os.path.exists(path):
     content = re.sub(r'^IBUsername=.*', f'IBUsername={user}', content, flags=re.MULTILINE)
     content = re.sub(r'^IBPassword=.*', f'IBPassword={pw}', content, flags=re.MULTILINE)
     content = re.sub(r'^AcceptIncomingAPIConnections=.*', 'AcceptIncomingAPIConnections=yes', content, flags=re.MULTILINE)
-    # 針對 gnzsnz 映像檔可能需要的調整
     content = re.sub(r'^IbApiPort=.*', 'IbApiPort=4002', content, flags=re.MULTILINE)
     with open(path, 'w') as f: f.write(content)
     print('✅ IBC 3.23.0 Config 準備就緒')
 "
 
 echo "--- 3. 啟動顯示與 VNC 轉發 ---"
-# 清除 X 鎖定檔防止啟動失敗
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
 echo "--- 4. 啟動 IB Gateway (指定版本 1043) ---"
 export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
 
-# 該映像檔中 Gateway 10.43.1a 的 jars 通常位於 1043 目錄
 /opt/ibc/scripts/ibcstart.sh 1043 --gateway \
   --tws-path=${TWS_PATH} \
   --ibc-path=${IBC_PATH} \
@@ -87,7 +85,6 @@ echo "--- 6. 系統狀態輪詢 ---"
     sleep 30
 done) &
 
-# 保持容器運行
 tail -f /dev/null
 EOF
 
