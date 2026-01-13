@@ -35,28 +35,32 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. 建立 entrypoint.sh (使用絕對路徑與路徑驗證)
+# 4. 建立 entrypoint.sh (針對 IBC 3.20.0 的腳本結構修正)
 RUN echo '#!/bin/bash\n\
 mkdir -p /root/ibc\n\
 if [ -f /app/ibc/config.ini ]; then cp /app/ibc/config.ini /root/ibc/config.ini; fi\n\
 sed -i "s/IBUsername=.*/IBUsername=${IB_USER}/" /root/ibc/config.ini\n\
 sed -i "s/IBPassword=.*/IBPassword=${IB_PASS}/" /root/ibc/config.ini\n\
 \n\
+echo "--- 環境檢查 ---"\n\
+echo "IBC 腳本清單:" && ls /opt/ibc/scripts\n\
+\n\
 echo "啟動虛擬螢幕..."\n\
 Xvfb :99 -screen 0 1024x768x16 &\n\
 sleep 5\n\
 \n\
-echo "檢查 IBC 腳本位置..."\n\
-ls -R /opt/ibc/scripts\n\
-\n\
 echo "啟動 IBC 與 IB Gateway..."\n\
-# 這裡使用絕對路徑，如果上面搬移成功，這裡就不會報錯\n\
-/opt/ibc/scripts/displaystart.sh /opt/ibgateway /opt/ibc /root/ibc/config.ini &\n\
+# 修正：使用 ibcstart.sh 並明確指定 Gateway 模式 (-g)\n\
+# 指令格式：ibcstart.sh [版本] -g --tws-path=[path] --ibc-path=[path] --config-file=[path] --user=[user] --pw=[pass]\n\
+/opt/ibc/scripts/ibcstart.sh ${IB_GATEWAY_VERSION} -g \
+  --tws-path=${TWS_PATH} \
+  --ibc-path=${IBC_PATH} \
+  --config-file=/root/ibc/config.ini \
+  --user=${IB_USER} \
+  --pw=${IB_PASS} &\n\
 \n\
-echo "等待 Gateway 初始化 (90s)..."\n\
+echo "等待 Gateway 啟動 (90s)..."\n\
 sleep 90\n\
 \n\
-echo "啟動 Python 策略程式..."\n\
+echo "啟動 Python 策略..."\n\
 python main.py' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
-
-ENTRYPOINT ["/app/entrypoint.sh"]
