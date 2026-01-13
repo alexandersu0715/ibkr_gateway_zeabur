@@ -1,5 +1,6 @@
 FROM python:3.12.7-slim
 
+# 設定環境變數
 ENV IB_GATEWAY_VERSION=stable \
     IBC_VERSION=3.20.0 \
     TWS_PATH=/opt/ibgateway \
@@ -13,16 +14,17 @@ RUN apt-get update && apt-get install -y \
     && ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 安裝 IBC (確保腳本都在 IBC_PATH 下)
+# 2. 安裝 IBC
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
     unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
-    chmod +x ${IBC_PATH}/*.sh && \
+    chmod +x ${IBC_PATH}/*.sh ${IBC_PATH}/scripts/*.sh && \
     rm /tmp/ibc.zip
 
-# 3. 安裝 IB Gateway
+# 3. 安裝 IB Gateway (修正網址並增加重試)
 RUN mkdir -p ${TWS_PATH} && \
-    wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
+    wget --tries=3 --retry-connrefused -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh || \
+    wget --tries=3 --retry-connrefused -q https://github.com/IbcAlpha/ibc-docker/raw/master/stable/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
     chmod +x /tmp/ibgateway-install.sh && \
     /tmp/ibgateway-install.sh -q -d ${TWS_PATH} && \
     rm /tmp/ibgateway-install.sh
@@ -62,12 +64,11 @@ x11vnc -display :99 -forever -shared -nopw -bg
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
 echo "--- 3. 啟動 IB Gateway ---"
-# 限制記憶體防止被 Zeabur 殺掉，並增加除錯輸出
 export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
 touch /tmp/ibc_boot.log
 
-# 這裡使用絕對路徑並確保指向正確的啟動腳本
-${IBC_PATH}/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
+# 使用 scripts 目錄下的啟動檔
+/opt/ibc/scripts/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
   --tws-path=${TWS_PATH} \
   --ibc-path=${IBC_PATH} \
   --ibc-ini=/root/ibc/config.ini \
@@ -78,12 +79,10 @@ ${IBC_PATH}/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
 echo "--- 4. 啟動 Python ---"
 (sleep 60 && python3 main.py > /tmp/python_app.log 2>&1) &
 
-echo "--- 5. 輪詢日誌 ---"
+echo "--- 5. 狀態監控 ---"
 (while true; do 
     echo "==== IBC LOG STATUS ===="
-    if [ -f /tmp/ibc_boot.log ]; then
-        tail -n 10 /tmp/ibc_boot.log
-    fi
+    [ -f /tmp/ibc_boot.log ] && tail -n 10 /tmp/ibc_boot.log
     ps aux | grep java | grep -v grep
     sleep 20
 done) &
