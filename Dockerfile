@@ -49,6 +49,7 @@ sleep 5\n\
 \n\
 # 啟動 Web VNC (NoVNC) 以便從瀏覽器查看畫面\n\
 websockify --web /usr/share/novnc/ 6080 localhost:5900 &\n\
+
 x11vnc -display :99 -forever -shared -nopw -listen localhost -xkb &\n\
 \n\
 echo "準備啟動 IBC..."\n\
