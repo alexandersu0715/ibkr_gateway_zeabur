@@ -8,6 +8,17 @@ from loguru import logger
 # 1. Setup asyncio patch
 util.patchAsyncio()
 
+async def check_port(host, port):
+    """檢查本地埠號是否已開啟，避免連線拒絕的錯誤噴發"""
+    try:
+        # 嘗試建立一個簡單的 TCP 連線
+        _, writer = await asyncio.open_connection(host, port)
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except:
+        return False
+
 def get_utc_now():
     """確保取得的是帶有時區資訊的 UTC 時間"""
     return datetime.datetime.now(datetime.timezone.utc)
@@ -43,7 +54,6 @@ async def place_and_manage_order(ib, contract, buy_amount, cash_threshold, cance
             logger.error(f"無法獲取有效 Bid 價格 (目前: {ticker.bid})，跳過此時段。")
             return
 
-        # LSE 價格通常較精細，round 到 2 位或 4 位視合約而定，這裡維持 2 位
         limit_price = round(ticker.bid + 0.01, 2)
         quantity = int(buy_amount // limit_price)
         
@@ -64,7 +74,6 @@ async def place_and_manage_order(ib, contract, buy_amount, cash_threshold, cance
                 return
             await asyncio.sleep(10)
 
-        # 超時取消
         if not trade.isDone():
             logger.warning(f"到達時間上限 ({cancel_time_utc})，撤單中...")
             ib.cancelOrder(order)
@@ -82,66 +91,4 @@ async def run_bot_loop(ib):
         await ib.qualifyContractsAsync(contract)
         logger.info(f"合約確認成功: {contract}")
     except Exception as e:
-        logger.error(f"合約確認失敗，嘗試後備方案: {e}")
-        contract = Stock('SWRD', 'LSE', 'USD')
-        await ib.qualifyContractsAsync(contract)
-
-    current_date = get_utc_now().date()
-    traded_1030 = False
-    traded_1400 = False
-
-    logger.info(f"機器人啟動。當前 UTC 日期: {current_date}")
-
-    while True:
-        if not ib.isConnected():
-            raise ConnectionError("IB 連線遺失")
-
-        now = get_utc_now()
-        
-        # 跨日重置旗標
-        if now.date() != current_date:
-            current_date = now.date()
-            traded_1030 = False
-            traded_1400 = False
-            logger.info(f"新的一天開始: {current_date}，重置交易標記。")
-
-        # --- 時段 1: 10:30 UTC ---
-        if not traded_1030 and (10 <= now.hour < 14):
-            if now.hour == 10 and now.minute >= 30 or now.hour > 10:
-                cancel_time = now.replace(hour=13, minute=55, second=0)
-                logger.info("觸發 10:30 UTC 交易時段")
-                await place_and_manage_order(ib, contract, 5000, 5100, cancel_time)
-                traded_1030 = True
-
-        # --- 時段 2: 14:00 UTC ---
-        if not traded_1400 and (14 <= now.hour < 16):
-            cancel_time = now.replace(hour=15, minute=55, second=0)
-            logger.info("觸發 14:00 UTC 交易時段")
-            await place_and_manage_order(ib, contract, 5000, 5100, cancel_time)
-            traded_1400 = True
-
-        await asyncio.sleep(30)
-
-async def main():
-    # 讀取 Zeabur 環境變數
-    host = os.getenv('IB_HOST', '127.0.0.1')
-    port = int(os.getenv('IB_PORT', 4002))
-    client_id = int(os.getenv('CLIENT_ID', 10))
-
-    while True:
-        ib = IB()
-        try:
-            logger.info(f"嘗試連線至 IBKR Gateway ({host}:{port})...")
-            await ib.connectAsync(host, port, clientId=client_id)
-            logger.success("連線成功，啟動邏輯循環。")
-            await run_bot_loop(ib)
-        except Exception as e:
-            logger.error(f"主程式崩潰或連線失敗: {e}")
-        finally:
-            ib.disconnect()
-        
-        logger.info("60 秒後嘗試重新連線...")
-        await asyncio.sleep(60)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        logger.error(f"合

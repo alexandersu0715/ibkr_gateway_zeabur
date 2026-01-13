@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y \
     openjdk-17-jre xvfb libxtst6 libxi6 libxrender1 libxinerama1 wget unzip procps \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y novnc websockify python3-numpy
+
 # 2. 下載並安裝 IBC (自動處理多餘資料夾)
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
@@ -50,6 +52,12 @@ echo "啟動虛擬螢幕..."\n\
 Xvfb :99 -screen 0 1024x768x16 &\n\
 sleep 5\n\
 \n\
+
+# 在啟動 Xvfb 之後加入
+websockify --web /usr/share/novnc/ 6080 localhost:5900 &
+x11vnc -display :99 -forever -shared -nopw -listen localhost -xkb &
+
+
 echo "準備啟動 IBC..."\n\
 # 這裡改用 displaybannerandlaunch.sh，它是針對 Xvfb 環境最穩定的啟動器\n\
 # 參數順序: TWS_PATH, IBC_PATH, CONFIG_PATH, TWS_MAJOR_V, MODE, USER, PASS\n\
