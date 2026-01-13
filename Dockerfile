@@ -6,19 +6,25 @@ ENV IB_GATEWAY_VERSION=stable \
     IBC_PATH=/opt/ibc \
     DISPLAY=:99
 
-# 1. 安裝系統依賴
+# 1. 安裝基礎套件
 RUN apt-get update && apt-get install -y \
     openjdk-17-jre xvfb libxtst6 libxi6 libxrender1 libxinerama1 wget unzip procps \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 安裝 IBC (保留結構，並強制遞迴授權)
+# 2. 下載並安裝 IBC (自動處理多餘資料夾)
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
-    unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
-    # 關鍵：給予 IBC 目錄下所有內容最高權限，確保內部的 scripts 資料夾也被授權
-    chmod -R 777 ${IBC_PATH}
+    unzip -o /tmp/ibc.zip -d /tmp/ibc_temp && \
+    # 關鍵：將解壓後可能在子資料夾的檔案全部搬移到 /opt/ibc 根目錄
+    if [ -d /tmp/ibc_temp/IBCLinux ]; then \
+        cp -r /tmp/ibc_temp/IBCLinux/* ${IBC_PATH}/; \
+    else \
+        cp -r /tmp/ibc_temp/* ${IBC_PATH}/; \
+    fi && \
+    chmod -R 777 ${IBC_PATH} && \
+    rm -rf /tmp/ibc_temp /tmp/ibc.zip
 
-# 3. 安裝 IB Gateway
+# 3. 安裝 IB Gateway (保持不變)
 RUN mkdir -p ${TWS_PATH} && \
     wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
     chmod +x /tmp/ibgateway-install.sh && \
@@ -29,7 +35,7 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. 啟動腳本：回歸 IBC 標準啟動路徑
+# 4. 建立 entrypoint.sh (使用絕對路徑與路徑驗證)
 RUN echo '#!/bin/bash\n\
 mkdir -p /root/ibc\n\
 if [ -f /app/ibc/config.ini ]; then cp /app/ibc/config.ini /root/ibc/config.ini; fi\n\
@@ -40,8 +46,11 @@ echo "啟動虛擬螢幕..."\n\
 Xvfb :99 -screen 0 1024x768x16 &\n\
 sleep 5\n\
 \n\
+echo "檢查 IBC 腳本位置..."\n\
+ls -R /opt/ibc/scripts\n\
+\n\
 echo "啟動 IBC 與 IB Gateway..."\n\
-# 使用 IBC 在 Linux 上的標準啟動進入點\n\
+# 這裡使用絕對路徑，如果上面搬移成功，這裡就不會報錯\n\
 /opt/ibc/scripts/displaystart.sh /opt/ibgateway /opt/ibc /root/ibc/config.ini &\n\
 \n\
 echo "等待 Gateway 初始化 (90s)..."\n\
