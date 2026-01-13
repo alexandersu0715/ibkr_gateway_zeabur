@@ -34,33 +34,41 @@ RUN mkdir -p ${TWS_PATH} && \
 WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
+# ... 前面保持不變 ...
 
-# 4. 建立 entrypoint.sh (針對 IBC 3.20.0 的腳本結構修正)
+# 4. 建立 entrypoint.sh (改用最相容的啟動方式)
 RUN echo '#!/bin/bash\n\
+# 確保設定檔目錄存在\n\
 mkdir -p /root/ibc\n\
 if [ -f /app/ibc/config.ini ]; then cp /app/ibc/config.ini /root/ibc/config.ini; fi\n\
+\n\
+# 注入帳密到 config.ini (這是 IBC 最穩定的讀取方式)\n\
 sed -i "s/IBUsername=.*/IBUsername=${IB_USER}/" /root/ibc/config.ini\n\
 sed -i "s/IBPassword=.*/IBPassword=${IB_PASS}/" /root/ibc/config.ini\n\
-\n\
-echo "--- 環境檢查 ---"\n\
-echo "IBC 腳本清單:" && ls /opt/ibc/scripts\n\
 \n\
 echo "啟動虛擬螢幕..."\n\
 Xvfb :99 -screen 0 1024x768x16 &\n\
 sleep 5\n\
 \n\
-echo "啟動 IBC 與 IB Gateway..."\n\
-# 修正：使用 ibcstart.sh 並明確指定 Gateway 模式 (-g)\n\
-# 指令格式：ibcstart.sh [版本] -g --tws-path=[path] --ibc-path=[path] --config-file=[path] --user=[user] --pw=[pass]\n\
-/opt/ibc/scripts/ibcstart.sh ${IB_GATEWAY_VERSION} -g \
-  --tws-path=${TWS_PATH} \
-  --ibc-path=${IBC_PATH} \
-  --config-file=/root/ibc/config.ini \
-  --user=${IB_USER} \
-  --pw=${IB_PASS} &\n\
+echo "準備啟動 IBC..."\n\
+# 這裡改用 displaybannerandlaunch.sh，它是針對 Xvfb 環境最穩定的啟動器\n\
+# 參數順序: TWS_PATH, IBC_PATH, CONFIG_PATH, TWS_MAJOR_V, MODE, USER, PASS\n\
+/opt/ibc/scripts/displaybannerandlaunch.sh \
+  /opt/ibgateway \
+  /opt/ibc \
+  /root/ibc/config.ini \
+  ${IB_GATEWAY_VERSION} \
+  gateway \
+  ${IB_USER} \
+  ${IB_PASS} &\n\
 \n\
-echo "等待 Gateway 啟動 (90s)..."\n\
+echo "等待 Gateway 初始化 (90s)..."\n\
+# 這裡很關鍵：我們需要確保後台進程不會讓容器結束\n\
+# 如果 Python 沒跑起來，容器就會退出，所以我們用 tail 監控日誌或保持前台\n\
 sleep 90\n\
 \n\
 echo "啟動 Python 策略..."\n\
-python main.py' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+# 使用 exec 讓 Python 成為主進程，防止容器退出\n\
+exec python main.py' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]
