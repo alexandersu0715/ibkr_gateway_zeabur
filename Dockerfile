@@ -1,4 +1,3 @@
-
 FROM python:3.12.7-slim
 
 # 設定環境變數
@@ -15,16 +14,18 @@ RUN apt-get update && apt-get install -y \
     && ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 安裝 IBC
+# 2. 安裝 IBC (修正解壓路徑)
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
     unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
-    chmod +x ${IBC_PATH}/*.sh ${IBC_PATH}/scripts/*.sh && \
+    chmod +x ${IBC_PATH}/*.sh && \
+    # 確保 scripts 目錄也具備執行權限 (如果有的話)
+    find ${IBC_PATH} -name "*.sh" -exec chmod +x {} + && \
     rm /tmp/ibc.zip
 
-# 3. 安裝 IB Gateway
+# 3. 安裝 IB Gateway (確保下載網址正確)
 RUN mkdir -p ${TWS_PATH} && \
-    wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
+    wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
     chmod +x /tmp/ibgateway-install.sh && \
     /tmp/ibgateway-install.sh -q -d ${TWS_PATH} && \
     rm /tmp/ibgateway-install.sh
@@ -33,17 +34,16 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. 建立 entrypoint.sh (包含強制 tail 與自動日誌輸出)
+# 4. 建立 entrypoint.sh (加入絕對不退出的監控邏輯)
 RUN cat <<'EOF' > /app/entrypoint.sh
 #!/bin/bash
-# 關閉 set -e，確保腳本出錯也會執行到最後的 tail
 set +e
 
-# 初始化目錄
+# 初始化目錄與設定
 mkdir -p /root/ibc /root/Jts
 [ -f /app/ibc/config.ini ] && cp /app/ibc/config.ini /root/ibc/config.ini
 
-echo "--- 1. Python 安全注入帳密 ---"
+echo "--- 1. Python 注入帳密 ---"
 python3 -c "
 import os, re
 path = '/root/ibc/config.ini'
@@ -68,10 +68,10 @@ websockify --web /usr/share/novnc 6080 localhost:5900 &
 
 echo "--- 3. 啟動 IB Gateway ---"
 export _JAVA_OPTIONS="-Xmx512M -Djava.awt.headless=false"
-# 確保日誌檔案存在
 touch /tmp/ibc_boot.log
 
-/opt/ibc/scripts/ibcstart.sh ${IB_GATEWAY_VERSION} --gateway \
+# 直接使用日誌中看到的啟動檔路徑
+${IBC_PATH}/gatewaystart.sh \
   --tws-path=${TWS_PATH} \
   --ibc-path=${IBC_PATH} \
   --ibc-ini=/root/ibc/config.ini \
@@ -82,15 +82,14 @@ touch /tmp/ibc_boot.log
 echo "--- 4. 啟動 Python 策略 ---"
 (sleep 60 && python3 main.py > /tmp/python_app.log 2>&1) &
 
-echo "--- 5. 啟動自動日誌監控 (每 10 秒輸出到控制台) ---"
+echo "--- 5. 自動日誌輪播 ---"
 (while true; do 
     echo "==== IBC BOOT LOG UPDATE ===="
-    tail -n 10 /tmp/ibc_boot.log
-    sleep 10
+    [ -f /tmp/ibc_boot.log ] && tail -n 15 /tmp/ibc_boot.log
+    sleep 15
 done) &
 
-echo "--- 6. 容器進入永續維護模式 ---"
-# 最後這行保證容器絕對不會退出
+echo "--- 6. 永續模式開啟 ---"
 tail -f /dev/null
 EOF
 
