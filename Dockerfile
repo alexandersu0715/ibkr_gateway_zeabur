@@ -3,10 +3,10 @@ FROM ghcr.io/gnzsnz/ib-gateway:10.43.1a
 
 USER root
 
-# 根據官方文件修正環境變數路徑
+# 設定您要求的環境變數
 ENV IBC_VERSION=3.23.0 \
-    IBC_PATH=/home/ibc/ibc \
-    TWS_PATH=/home/ibc/ibgateway \
+    IBC_PATH=/root/ibc \
+    TWS_PATH=/root/Jts \
     DISPLAY=:99
 
 # 2. 安裝 Python 與工具
@@ -15,28 +15,38 @@ RUN apt-get update && apt-get install -y \
     novnc websockify fluxbox xterm wget unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. 強制更新 IBC 為 3.23.0 (覆蓋映像檔內舊版)
+# 3. 強制安裝 IBC 3.23.0 到 /root/ibc
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
     unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
     chmod +x ${IBC_PATH}/*.sh ${IBC_PATH}/scripts/*.sh && \
     rm /tmp/ibc.zip
 
+# 4. 強制對齊 TWS 路徑：將 /home/ibc/ibgateway 內容搬移或連結到 /root/Jts
+RUN mkdir -p /root/Jts && \
+    cp -rs /home/ibc/ibgateway/* /root/Jts/ || true
+
 WORKDIR /app
 COPY . .
 
-# 4. 安裝 Python 套件 (忽略系統衝突)
+# 5. 安裝 Python 套件 (忽略系統衝突)
 RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages --ignore-installed
 
-# 5. 建立啟動腳本 (精確對齊官方路徑)
+# 6. 建立啟動腳本
 RUN cat <<'EOF' > /app/custom_entrypoint.sh
 #!/bin/bash
 set +e
 
-echo "--- 1. 初始化與注入 ---"
-# 官方映像檔的設定檔通常位於 /home/ibc/ibc/config.ini
-mkdir -p /root/ibc /root/Jts
-cp ${IBC_PATH}/config.ini /root/ibc/config.ini
+echo "--- 1. 初始化與帳密注入 ---"
+# 確保 /root/ibc/config.ini 存在
+if [ -f /app/ibc/config.ini ]; then
+    cp /app/ibc/config.ini /root/ibc/config.ini
+else
+    [ ! -f /root/ibc/config.ini ] && cp /root/ibc/admin/config.ini /root/ibc/config.ini
+fi
+
+# 確保 jts.ini 存在於 /root/Jts (這是 IBC 啟動的關鍵檢查)
+[ ! -f /root/Jts/jts.ini ] && touch /root/Jts/jts.ini
 
 python3 -c "
 import os, re
@@ -60,14 +70,13 @@ fluxbox -display :99 &
 x11vnc -display :99 -forever -shared -nopw -bg
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-echo "--- 3. 啟動 IB Gateway (精確指向 /home/ibc/ibgateway) ---"
+echo "--- 3. 啟動 IB Gateway (精確路徑模式) ---"
 export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
 
-# 根據 gnzsnz 官方文件，我們呼叫新的 IBC 啟動檔
-# 指定 1043 版本
-${IBC_PATH}/scripts/ibcstart.sh 1043 --gateway \
-  --tws-path=${TWS_PATH} \
-  --ibc-path=${IBC_PATH} \
+# 根據 gnzsnz 映像檔結構，版本資料夾為 1043
+/root/ibc/scripts/ibcstart.sh 1043 --gateway \
+  --tws-path=/root/Jts \
+  --ibc-path=/root/ibc \
   --ibc-ini=/root/ibc/config.ini \
   --user=${IB_USER} \
   --pw=${IB_PASS} \
