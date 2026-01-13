@@ -1,0 +1,6 @@
+ib_async
+pandas
+numpy
+pandas_ta
+python-dotenv
+loguru
