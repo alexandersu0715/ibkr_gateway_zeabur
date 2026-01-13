@@ -8,7 +8,7 @@ ENV TWS_PATH=/root/Jts
 ENV IBC_PATH=/root/ibc
 ENV DISPLAY=:99
 
-# 2. 安裝系統依賴 (Java, Xvfb, 網路工具, 還有文字處理用的 sed)
+# 2. 安裝系統依賴
 RUN apt-get update && apt-get install -y \
     openjdk-17-jre \
     xvfb \
@@ -21,14 +21,14 @@ RUN apt-get update && apt-get install -y \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. 安裝 IBC (修正解壓縮邏輯，確保 scripts 資料夾直接在 /root/ibc 下)
+# 3. 安裝 IBC (加入 -o 參數強制覆蓋，避免互動提問)
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
-    unzip -j /tmp/ibc.zip -d ${IBC_PATH} && \
-    # 注意：-j 會扁平化檔案，所以我們要手動建立 scripts 資料夾或修正路徑
+    # -o 代表 overwrite (覆蓋), -j 代表 junk paths (不保留原始資料夾結構)
+    unzip -o -j /tmp/ibc.zip -d ${IBC_PATH} && \
     chmod +x ${IBC_PATH}/*.sh
-	
-# 4. 安裝 IB Gateway (自動下載最新穩定版安裝腳本)
+
+# 4. 安裝 IB Gateway
 RUN mkdir -p /opt/ibgateway && \
     wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable-standalone/ibgateway-stable-standalone-linux-x64.sh -O /tmp/ibgateway-install.sh && \
     chmod +x /tmp/ibgateway-install.sh && \
@@ -40,12 +40,18 @@ WORKDIR /app
 COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 6. 修正啟動腳本 entrypoint.sh 中的路徑
+# 6. 修正後的啟動腳本
+# 注意：IBC 在 Linux 上啟動 Gateway 的腳本是 gatewaystart.sh
 RUN echo '#!/bin/bash\n\
 mkdir -p /root/ibc\n\
-# 這裡假設你的專案裡有 ibc/config.ini\n\
-if [ -f /app/ibc/config.ini ]; then cp /app/ibc/config.ini /root/ibc/config.ini; fi\n\
+# 複製專案內的設定檔到 IBC 預設路徑\n\
+if [ -f /app/ibc/config.ini ]; then \n\
+    cp /app/ibc/config.ini /root/ibc/config.ini\n\
+else\n\
+    echo "錯誤: 找不到 /app/ibc/config.ini"\n\
+fi\n\
 \n\
+# 動態注入 Zeabur 環境變數\n\
 sed -i "s/IBUsername=.*/IBUsername=${IB_USER}/" /root/ibc/config.ini\n\
 sed -i "s/IBPassword=.*/IBPassword=${IB_PASS}/" /root/ibc/config.ini\n\
 \n\
@@ -54,8 +60,9 @@ Xvfb :99 -screen 0 1024x768x16 &\n\
 sleep 5\n\
 \n\
 echo "啟動 IBC 與 IB Gateway..."\n\
-# 關鍵修正：直接執行腳本，路徑需與安裝時一致\n\
-/root/ibc/displaystart.sh &\n\
+# 執行 gatewaystart.sh 並傳入必要的路徑參數\n\
+# 格式: gatewaystart.sh [tws_path] [ibc_path] [config_file]\n\
+/root/ibc/gatewaystart.sh /opt/ibgateway /root/ibc /root/ibc/config.ini &\n\
 \n\
 echo "等待 Gateway 初始化 (90s)..."\n\
 sleep 90\n\
@@ -63,5 +70,4 @@ sleep 90\n\
 echo "啟動 Python 策略程式..."\n\
 python main.py' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
-# 7. 執行
 ENTRYPOINT ["/app/entrypoint.sh"]
