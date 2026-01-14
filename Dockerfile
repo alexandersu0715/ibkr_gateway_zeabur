@@ -2,13 +2,13 @@ FROM ghcr.io/gnzsnz/ib-gateway:10.43.1a
 
 USER root
 
-# 根據你的 find 結果設定精確路徑
 ENV IBC_VERSION=3.23.0 \
     IBC_PATH=/opt/ibc \
+    # 修改 TWS_PATH 指向，讓 IBC 的搜尋範圍與實際檔案對齊
     TWS_PATH=/home/ibgateway/Jts/ibgateway \
     DISPLAY=:99
 
-# 1. 安裝必要工具
+# 1. 安裝工具
 RUN apt-get update && apt-get install -y \
     python3 python3-pip wget unzip procps \
     novnc websockify fluxbox x11vnc xvfb \
@@ -24,26 +24,37 @@ RUN mkdir -p ${IBC_PATH} && \
 WORKDIR /app
 COPY . .
 
-# 3. 建立最終啟動腳本
+# 3. 建立啟動腳本
 RUN cat <<'EOF' > /app/entrypoint.sh
 #!/bin/bash
 set +e
 
-echo "--- 1. 物理路徑對齊 ---"
-# 確保 Jts 目錄下有 jts.ini (從 tmpl 複製)
-if [ ! -f /home/ibgateway/Jts/jts.ini ]; then
-    cp /home/ibgateway/Jts/jts.ini.tmpl /home/ibgateway/Jts/jts.ini
-fi
+echo "--- 1. 強制路徑物理對齊 ---"
+# 強制給予整機 ibgateway 目錄權限
+chmod -R 777 /home/ibgateway
 
-# 建立 IBC 設定檔目錄
-mkdir -p /root/ibc
-if [ -f /app/ibc/config.ini ]; then
-    cp /app/ibc/config.ini /root/ibc/config.ini
+# 解決 "Neither tws.vmoptions nor ibgateway.vmoptions could be found" 的終極手段：
+# 把檔案「物理性」地複製到 IBC 搜尋的所有層級
+TARGET_DIR="/home/ibgateway/Jts/ibgateway/10.43.1a"
+PARENT_DIR="/home/ibgateway/Jts/ibgateway"
+
+if [ -f "$TARGET_DIR/ibgateway.vmoptions" ]; then
+    echo "Found vmoptions, performing physical sync..."
+    cp "$TARGET_DIR/ibgateway.vmoptions" "$PARENT_DIR/ibgateway.vmoptions"
+    cp "$TARGET_DIR/ibgateway.vmoptions" "$PARENT_DIR/tws.vmoptions"
+    cp "$TARGET_DIR/ibgateway.vmoptions" "$TARGET_DIR/tws.vmoptions"
 else
-    cp /opt/ibc/config.ini /root/ibc/config.ini
+    echo "❌ 警告: 找不到原始 vmoptions 檔案！"
 fi
 
-echo "--- 2. 注入帳密 ---"
+# 確保 jts.ini 存在
+mkdir -p /home/ibgateway/Jts
+cp /home/ibgateway/Jts/jts.ini.tmpl /home/ibgateway/Jts/jts.ini 2>/dev/null || touch /home/ibgateway/Jts/jts.ini
+chmod 777 /home/ibgateway/Jts/jts.ini
+
+echo "--- 2. 帳密注入 ---"
+mkdir -p /root/ibc
+[ -f /app/ibc/config.ini ] && cp /app/ibc/config.ini /root/ibc/config.ini
 python3 -c "
 import os, re
 path = '/root/ibc/config.ini'
@@ -68,8 +79,7 @@ websockify --web /usr/share/novnc 6080 localhost:5900 &
 echo "--- 4. 正式啟動 IBC ---"
 export _JAVA_OPTIONS="-Xmx768m -Xms256m -Djava.awt.headless=false"
 
-# 關鍵：TWS_PATH 指向包含 10.43.1a 的目錄
-# 所有的 vmoptions 都在裡面了
+# 再次確認路徑
 /opt/ibc/scripts/ibcstart.sh 10.43.1a --gateway \
   --tws-path=/home/ibgateway/Jts/ibgateway \
   --tws-settings-path=/home/ibgateway/Jts \
@@ -81,11 +91,11 @@ export _JAVA_OPTIONS="-Xmx768m -Xms256m -Djava.awt.headless=false"
 
 echo "--- 5. 監控 ---"
 (while true; do 
-    echo "==== MONITORING ===="
+    echo "==== [$(date)] MONITORING ===="
     if ps aux | grep java | grep -v grep > /dev/null; then
         echo "✅ IB Gateway IS RUNNING"
     else
-        echo "❌ IB Gateway NOT RUNNING. LOG:"
+        echo "❌ IB Gateway NOT RUNNING. DIAGNOSTIC:"
         [ -f /tmp/ibc_boot.log ] && tail -n 10 /tmp/ibc_boot.log
     fi
     sleep 30
