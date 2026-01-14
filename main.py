@@ -1,162 +1,95 @@
-import os
 import asyncio
-import datetime
-import math
-from ib_async import *
+import os
+from datetime import datetime
+from ib_async import IB, Stock, LimitOrder
 from loguru import logger
 
-# 1. Setup asyncio patch
-util.patchAsyncio()
+# --- 設定區域 ---
+HOST = '127.0.0.1'
+PORT = int(os.getenv('TWS_PORT', 4001))
+CLIENT_ID = int(os.getenv('IB_CLIENT_ID', 10))
+SYMBOL = 'SWRD'  # 您要交易的標的
 
-async def check_port(host, port):
-    """檢查本地埠號是否已開啟，避免連線拒絕的錯誤噴發"""
-    try:
-        # 嘗試建立一個簡單的 TCP 連線
-        _, writer = await asyncio.open_connection(host, port)
-        writer.close()
-        await writer.wait_closed()
-        return True
-    except:
-        return False
-
-def get_utc_now():
-    """確保取得的是帶有時區資訊的 UTC 時間"""
-    return datetime.datetime.now(datetime.timezone.utc)
-
-async def get_usd_cash(ib):
-    """獲取帳戶餘額"""
-    account_summary = await ib.accountSummaryAsync()
-    for tag in account_summary:
-        if tag.tag == 'TotalCashValue' and tag.currency == 'USD':
-            return float(tag.value)
-    return 0.0
-
-async def place_and_manage_order(ib, contract, buy_amount, cash_threshold, cancel_time_utc):
-    try:
-        usd_cash = await get_usd_cash(ib)
-        logger.info(f"當前可用 USD 現金: {usd_cash}")
-        
-        if usd_cash <= cash_threshold:
-            logger.warning(f"現金 (${usd_cash}) 低於門檻 (${cash_threshold})，取消本次交易。")
-            return
-
-        # 切換至延遲行情（若無實時訂閱）
-        ib.reqMarketDataType(3) 
-        ticker = ib.reqMktData(contract, '', False, False)
-        
-        # 等待有效報價
-        logger.info(f"正在獲取 {contract.symbol} 報價...")
-        for _ in range(15):
-            await asyncio.sleep(1)
-            if ticker.bid and ticker.bid > 0 and not math.isnan(ticker.bid):
-                break
-        
-        if ticker.bid is None or ticker.bid <= 0 or math.isnan(ticker.bid):
-            logger.error(f"無法獲取有效 Bid 價格 (目前: {ticker.bid})，跳過此時段。")
-            return
-
-        limit_price = round(ticker.bid + 0.01, 2)
-        quantity = int(buy_amount // limit_price)
-        
-        if quantity <= 0:
-            logger.error(f"計算數量為 0 (價格: {limit_price})。")
-            return
-
-        logger.info(f"送出限價買單: {quantity} 股 @ {limit_price}")
-        order = LimitOrder('BUY', quantity, limit_price)
-        trade = ib.placeOrder(contract, order)
-
-        # 監控直到成交或超時
-        while get_utc_now() < cancel_time_utc:
-            if not ib.isConnected():
-                 raise ConnectionError("監控期間連線中斷")
-            if trade.isDone():
-                logger.success(f"訂單已成交！狀態: {trade.orderStatus.status}")
-                return
-            await asyncio.sleep(10)
-
-        if not trade.isDone():
-            logger.warning(f"到達時間上限 ({cancel_time_utc})，撤單中...")
-            ib.cancelOrder(order)
-            await asyncio.sleep(2)
-            logger.info(f"訂單最終狀態: {trade.orderStatus.status}")
-
-    except Exception as e:
-        logger.exception(f"執行訂單時發生錯誤: {e}")
-
-async def run_bot_loop(ib):
-    # LSE SWRD 合約設定
-    contract = Stock('SWRD', 'SMART', 'USD', primaryExchange='LSE')
+async def run_bot_loop(ib: IB):
+    """
+    這裡放置您的交易策略核心邏輯。
+    """
+    logger.info(f"進入策略循環。交易標的: {SYMBOL}")
     
-    try:
-        await ib.qualifyContractsAsync(contract)
-        logger.info(f"合約確認成功: {contract}")
-    except Exception as e:
-        logger.error(f"Contract failed, trying fallback: {e}")
-        contract = Stock('SWRD', 'LSE', 'USD')
-        await ib.qualifyContractsAsync(contract)
-
-    current_date = get_utc_now().date()
-    traded_1030 = False
-    traded_1400 = False
-
-    logger.info(f"機器人啟動。當前 UTC 日期: {current_date}")
-
+    # 定義合約 (LSE 交易所的 SWRD)
+    contract = Stock(SYMBOL, 'SMART', 'USD', primaryExchange='LSEETF')
+    
     while True:
-        if not ib.isConnected():
-            logger.warning("檢測到連線中斷，退出迴圈準備重連...")
-            break
-
-        now = get_utc_now()
+        # 1. 檢查連線狀態 (心跳檢測)
+        await ib.reqCurrentTimeAsync()
         
-        # 跨日重置旗標
-        if now.date() != current_date:
-            current_date = now.date()
-            traded_1030 = False
-            traded_1400 = False
-            logger.info(f"新的一天開始: {current_date}，重置交易標記。")
+        # 2. 獲取當前帳戶餘額或持倉 (範例)
+        # positions = ib.positions()
+        # logger.info(f"當前持倉數量: {len(positions)}")
 
-        # --- 時段 1: 10:30 UTC ---
-        if not traded_1030 and (10 <= now.hour < 14):
-            if (now.hour == 10 and now.minute >= 30) or now.hour > 10:
-                cancel_time = now.replace(hour=13, minute=55, second=0, microsecond=0)
-                logger.info("觸發 10:30 UTC 交易時段")
-                await place_and_manage_order(ib, contract, 5000, 5100, cancel_time)
-                traded_1030 = True
+        # 3. 策略邏輯執行點
+        now_utc = datetime.utcnow()
+        logger.info(f"機器人運行中... 當前時間 (UTC): {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        # --- 時段 2: 14:00 UTC (可依需求開啟或修改邏輯) ---
-        # if not traded_1400 and (now.hour >= 14):
-        #     ...
+        # --- 在此加入您的買賣判斷 ---
+        # 範例：如果到了特定時間執行動作
+        # if now_utc.hour == 10 and now_utc.minute == 30:
+        #     order = LimitOrder('BUY', 1, 35.00)
+        #     trade = ib.placeOrder(contract, order)
+        #     logger.warning(f"送出訂單: {trade}")
 
+        # 保持循環，每 60 秒檢查一次
         await asyncio.sleep(60)
 
 async def main():
+    """
+    主程式：負責連線管理與異常重連。
+    """
     ib = IB()
-    host = '127.0.0.1'
-    port = 4001
-    # 優先讀取 Zeabur 環境變數，若無則預設為 10
-    client_id = int(os.getenv('IB_CLIENT_ID', 10))
-
+    
     while True:
         try:
-            if await check_port(host, port):
-                logger.info(f"正在連線至 IBKR Gateway ({host}:{port}) clientId={client_id}...")
-                await ib.connectAsync(host, port, clientId=client_id)
-                logger.success("連線成功！")
-                await run_bot_loop(ib)
-            else:
-                logger.warning(f"等待 Gateway 開放埠號 {port} (Gateway 可能尚未啟動完成)...")
-        except Exception as e:
-            logger.error(f"連線或執行期間發生異常: {e}")
-        
-        if ib.isConnected():
-            ib.disconnect()
-        
-        logger.info("10 秒後嘗試重新連線...")
-        await asyncio.sleep(10)
+            if not ib.isConnected():
+                logger.info(f"正在連線至 IBKR Gateway ({HOST}:{PORT}) clientId={CLIENT_ID}...")
+                
+                # 連線至 Gateway
+                await ib.connectAsync(HOST, PORT, clientId=CLIENT_ID, timeout=30)
+                logger.success("✅ 連線成功！")
 
-if __name__ == '__main__':
+                # 重要：設定行情數據類型
+                # 3 = 延遲行情 (若您沒買即時數據，這能防止報錯)
+                # 1 = 即時行情
+                ib.reqMarketDataType(3)
+                logger.info("已設定市場數據類型為: 延遲行情 (Type 3)")
+
+                # 確認合約有效性
+                contract = Stock(SYMBOL, 'SMART', 'USD', primaryExchange='LSEETF')
+                qualified_contracts = await ib.qualifyContractsAsync(contract)
+                if qualified_contracts:
+                    logger.info(f"🎯 合約確認成功: {qualified_contracts[0].localSymbol}")
+                else:
+                    logger.error("❌ 無法識別合約，請檢查代碼或交易所設定")
+
+            # 啟動策略循環
+            await run_bot_loop(ib)
+
+        except (ConnectionError, OSError, asyncio.TimeoutError):
+            logger.error("📡 連線中斷 (Connection Closed)，將在 60 秒後嘗試重連...")
+        except Exception as e:
+            logger.exception(f"⚠️ 發生未預期錯誤: {e}")
+        finally:
+            # 確保清理舊連線
+            if ib.isConnected():
+                ib.disconnect()
+            
+            # 等待重連緩衝
+            await asyncio.sleep(60)
+
+if __name__ == "__main__":
+    # 設定日誌格式
+    logger.add("/tmp/python_app.log", rotation="10 MB", level="INFO")
+    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("使用者強制停止機器人")       
+        logger.info("機器人手動停止。")
