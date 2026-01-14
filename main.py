@@ -140,4 +140,23 @@ async def main():
     while True:
         try:
             if await check_port(host, port):
-                logger.info(f"
+                logger.info(f"正在連線至 IBKR Gateway ({host}:{port}) clientId={client_id}...")
+                await ib.connectAsync(host, port, clientId=client_id)
+                logger.success("連線成功！")
+                await run_bot_loop(ib)
+            else:
+                logger.warning(f"等待 Gateway 開放埠號 {port} (Gateway 可能尚未啟動完成)...")
+        except Exception as e:
+            logger.error(f"連線或執行期間發生異常: {e}")
+        
+        if ib.isConnected():
+            ib.disconnect()
+        
+        logger.info("10 秒後嘗試重新連線...")
+        await asyncio.sleep(10)
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("使用者強制停止機器人")       
