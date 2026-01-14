@@ -45,6 +45,7 @@ async def place_and_manage_order(ib, contract, buy_amount, cash_threshold, cance
         ticker = ib.reqMktData(contract, '', False, False)
         
         # 等待有效報價
+        logger.info(f"正在獲取 {contract.symbol} 報價...")
         for _ in range(15):
             await asyncio.sleep(1)
             if ticker.bid and ticker.bid > 0 and not math.isnan(ticker.bid):
@@ -103,7 +104,8 @@ async def run_bot_loop(ib):
 
     while True:
         if not ib.isConnected():
-            raise ConnectionError("IB 連線遺失")
+            logger.warning("檢測到連線中斷，退出迴圈準備重連...")
+            break
 
         now = get_utc_now()
         
@@ -116,8 +118,26 @@ async def run_bot_loop(ib):
 
         # --- 時段 1: 10:30 UTC ---
         if not traded_1030 and (10 <= now.hour < 14):
-            if now.hour == 10 and now.minute >= 30 or now.hour > 10:
-                cancel_time = now.replace(hour=13, minute=55, second=0)
+            if (now.hour == 10 and now.minute >= 30) or now.hour > 10:
+                cancel_time = now.replace(hour=13, minute=55, second=0, microsecond=0)
                 logger.info("觸發 10:30 UTC 交易時段")
                 await place_and_manage_order(ib, contract, 5000, 5100, cancel_time)
-                traded_1030 =
+                traded_1030 = True
+
+        # --- 時段 2: 14:00 UTC (可依需求開啟或修改邏輯) ---
+        # if not traded_1400 and (now.hour >= 14):
+        #     ...
+
+        await asyncio.sleep(60)
+
+async def main():
+    ib = IB()
+    host = '127.0.0.1'
+    port = 4002
+    # 優先讀取 Zeabur 環境變數，若無則預設為 10
+    client_id = int(os.getenv('IB_CLIENT_ID', 10))
+
+    while True:
+        try:
+            if await check_port(host, port):
+                logger.info(f"

@@ -107,3 +107,11 @@ EOF
 RUN chmod +x /app/entrypoint.sh
 EXPOSE 6080
 ENTRYPOINT ["/app/entrypoint.sh"]
+
+
+echo "--- 5. 啟動 Python 策略 ---"
+# 確保 Gateway 完全就緒後再啟動 Python (延遲 30 秒)
+(sleep 30 && python3 /app/main.py > /tmp/python_app.log 2>&1) &
+
+echo "--- 6. 永續監控 ---"
+tail -f /dev/null
