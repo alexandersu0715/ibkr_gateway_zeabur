@@ -78,14 +78,15 @@ websockify --web /usr/share/novnc 6080 localhost:5900 &
 echo "--- 4. 正式啟動 IB Gateway ---"
 export _JAVA_OPTIONS="-Xmx768m -Xms256m -Djava.awt.headless=false"
 
+# 修正後的 entrypoint.sh 關鍵部分
 /opt/ibc/scripts/ibcstart.sh 10.43.1a --gateway \
   --tws-path=/home/ibgateway/Jts/ibgateway \
   --tws-settings-path=/home/ibgateway/Jts \
   --ibc-path=/opt/ibc \
   --ibc-ini=/root/ibc/config.ini \
-  --user=${IB_USER} \
-  --pw=${IB_PASS} \
-  --mode=live > /tmp/ibc_boot.log 2>&1 &
+  --user="${IB_USER}" \
+  --pw="${IB_PASS}" \
+  --mode="${TRADING_MODE:-live}" > /tmp/ibc_boot.log 2>&1 &
 
 echo "--- 5. 啟動 Python 策略 (延遲 40 秒等待 Gateway 就緒) ---"
 (sleep 40 && python3 /app/main.py > /tmp/python_app.log 2>&1) &
