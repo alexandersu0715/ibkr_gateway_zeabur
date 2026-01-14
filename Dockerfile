@@ -66,3 +66,44 @@ if os.path.exists(path):
     content = re.sub(r'^IbApiPort=.*', 'IbApiPort=4002', content, flags=re.MULTILINE)
     with open(path, 'w') as f: f.write(content)
 "
+
+echo "--- 3. 啟動顯示環境 (VNC) ---"
+rm -f /tmp/.X*lock
+Xvfb :99 -ac -screen 0 1024x768x16 &
+sleep 2
+fluxbox -display :99 &
+x11vnc -display :99 -forever -shared -nopw -bg -rfbport 5900
+websockify --web /usr/share/novnc 6080 localhost:5900 &
+
+echo "--- 4. 正式啟動 IB Gateway ---"
+export _JAVA_OPTIONS="-Xmx768m -Xms256m -Djava.awt.headless=false"
+
+/opt/ibc/scripts/ibcstart.sh 10.43.1a --gateway \
+  --tws-path=/home/ibgateway/Jts/ibgateway \
+  --tws-settings-path=/home/ibgateway/Jts \
+  --ibc-path=/opt/ibc \
+  --ibc-ini=/root/ibc/config.ini \
+  --user=${IB_USER} \
+  --pw=${IB_PASS} \
+  --mode=paper > /tmp/ibc_boot.log 2>&1 &
+
+echo "--- 5. 啟動 Python 策略 (延遲 40 秒等待 Gateway 就緒) ---"
+(sleep 40 && python3 /app/main.py > /tmp/python_app.log 2>&1) &
+
+echo "--- 6. 永續監控與日誌輸出 ---"
+(while true; do 
+    echo "==== [$(date)] MONITORING ===="
+    if ps aux | grep java | grep -v grep > /dev/null; then
+        echo "✅ IB Gateway IS RUNNING"
+    else
+        echo "❌ IB Gateway NOT RUNNING. LOG SNIPPET:"
+        [ -f /tmp/ibc_boot.log ] && tail -n 10 /tmp/ibc_boot.log
+    fi
+    sleep 30
+done) &
+
+tail -f /dev/null
+EOF
+RUN chmod +x /app/entrypoint.sh
+EXPOSE 6080
+ENTRYPOINT ["/app/entrypoint.sh"]
