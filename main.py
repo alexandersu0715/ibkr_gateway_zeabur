@@ -133,7 +133,7 @@ async def run_bot_loop(ib):
 async def main():
     ib = IB()
     host = '127.0.0.1'
-    port = 4002
+    port = 4001
     # 優先讀取 Zeabur 環境變數，若無則預設為 10
     client_id = int(os.getenv('IB_CLIENT_ID', 10))
 

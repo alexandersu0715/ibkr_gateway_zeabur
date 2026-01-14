@@ -85,7 +85,7 @@ export _JAVA_OPTIONS="-Xmx768m -Xms256m -Djava.awt.headless=false"
   --ibc-ini=/root/ibc/config.ini \
   --user=${IB_USER} \
   --pw=${IB_PASS} \
-  --mode=paper > /tmp/ibc_boot.log 2>&1 &
+  --mode=live > /tmp/ibc_boot.log 2>&1 &
 
 echo "--- 5. 啟動 Python 策略 (延遲 40 秒等待 Gateway 就緒) ---"
 (sleep 40 && python3 /app/main.py > /tmp/python_app.log 2>&1) &
