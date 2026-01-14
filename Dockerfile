@@ -32,15 +32,21 @@ COPY . .
 # 4. 安裝 Python 套件
 RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages --ignore-installed
 
-# 5. 啟動腳本
+# 5. 建立啟動腳本 (針對 .vmoptions 找不到的最終修正)
 RUN cat <<'EOF' > /app/custom_entrypoint.sh
 #!/bin/bash
 set +e
 
-echo "--- 1. 注入帳密 ---"
-mkdir -p /root/ibc
+echo "--- 1. 初始化與路徑對齊 ---"
+mkdir -p /root/ibc /root/Jts/ibgateway
 [ -f /app/ibc/config.ini ] && cp /app/ibc/config.ini /root/ibc/config.ini
 
+# 關鍵修正：確保 .vmoptions 能被 IBC 找到
+# 將檔案從深層目錄連結到 tws-path 的根目錄
+ln -sf /home/ibgateway/Jts/ibgateway/10.43.1a/ibgateway.vmoptions /root/Jts/ibgateway/ibgateway.vmoptions
+ln -sf /home/ibgateway/Jts/ibgateway/10.43.1a/ibgateway.vmoptions /root/Jts/ibgateway/tws.vmoptions
+
+echo "--- 2. 注入帳密 ---"
 python3 -c "
 import os, re
 path = '/root/ibc/config.ini'
@@ -55,7 +61,7 @@ if os.path.exists(path):
     with open(path, 'w') as f: f.write(content)
 "
 
-echo "--- 2. 啟動顯示環境 ---"
+echo "--- 3. 啟動顯示環境 ---"
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 Xvfb :99 -ac -screen 0 1024x768x16 &
 sleep 2
@@ -63,11 +69,10 @@ fluxbox -display :99 &
 x11vnc -display :99 -forever -shared -nopw -bg
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-echo "--- 3. 啟動 IB Gateway (精確路徑模式) ---"
+echo "--- 4. 啟動 IB Gateway ---"
 export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
 
-# 根據您的 ls 深度路徑：
-# /root/Jts/ibgateway 下面有 10.43.1a
+# 啟動指令：確保 --tws-path 指向包含 10.43.1a 資料夾的目錄
 /opt/ibc/scripts/ibcstart.sh 10.43.1a --gateway \
   --tws-path=/root/Jts/ibgateway \
   --ibc-path=/opt/ibc \
@@ -76,19 +81,17 @@ export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
   --pw=${IB_PASS} \
   --mode=paper > /tmp/ibc_boot.log 2>&1 &
 
-echo "--- 4. 啟動 Python 策略 ---"
-(sleep 60 && python3 /app/main.py > /tmp/python_app.log 2>&1) &
-
-echo "--- 5. 監控 ---"
+echo "--- 5. 狀態監控 ---"
 (while true; do 
     echo "==== [$(date)] MONITORING ===="
-    ps aux | grep java | grep -v grep || echo "⚠️ Java Gateway 正在加載中或出錯..."
-    [ -f /tmp/ibc_boot.log ] && tail -n 5 /tmp/ibc_boot.log
+    if ps aux | grep -v grep | grep java > /dev/null; then
+        echo "✅ IB Gateway 已成功啟動！"
+    else
+        echo "❌ IB Gateway 未運行。錯誤詳情："
+        [ -f /tmp/ibc_boot.log ] && tail -n 10 /tmp/ibc_boot.log
+    fi
     sleep 30
 done) &
 
 tail -f /dev/null
 EOF
-
-RUN chmod +x /app/custom_entrypoint.sh
-ENTRYPOINT ["/app/custom_entrypoint.sh"]
