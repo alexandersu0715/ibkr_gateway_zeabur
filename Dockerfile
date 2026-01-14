@@ -2,10 +2,9 @@ FROM ghcr.io/gnzsnz/ib-gateway:10.43.1a
 
 USER root
 
-# 根據您的 ls 結果設定環境變數
+# 設定環境變數：全部統一到 /root 以避開使用者權限問題
 ENV IBC_VERSION=3.23.0 \
     IBC_PATH=/opt/ibc \
-    # 關鍵：TWS_PATH 必須是包含版本號資料夾的父目錄
     TWS_PATH=/root/Jts/ibgateway \
     DISPLAY=:99
 
@@ -15,31 +14,32 @@ RUN apt-get update && apt-get install -y \
     novnc websockify fluxbox xterm wget unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 強制更新 IBC 3.23.0
+# 2. 安裝 IBC 3.23.0 到系統目錄
 RUN mkdir -p ${IBC_PATH} && \
     wget -q https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLinux-${IBC_VERSION}.zip -O /tmp/ibc.zip && \
     unzip -o /tmp/ibc.zip -d ${IBC_PATH} && \
     chmod +x ${IBC_PATH}/*.sh ${IBC_PATH}/scripts/*.sh && \
     rm /tmp/ibc.zip
 
+# 3. 核心修正：將 /home/ibgateway 內的結構完全連結到 /root 下
+RUN mkdir -p /root/Jts && \
+    ln -s /home/ibgateway/Jts/ibgateway /root/Jts/ibgateway && \
+    ln -s /home/ibgateway/Jts/jts.ini.tmpl /root/Jts/jts.ini
+
 WORKDIR /app
 COPY . .
 
-# 3. 安裝 Python 套件
+# 4. 安裝 Python 套件
 RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages --ignore-installed
 
-# 4. 建立啟動腳本
+# 5. 啟動腳本
 RUN cat <<'EOF' > /app/custom_entrypoint.sh
 #!/bin/bash
 set +e
 
-echo "--- 1. 初始化目錄與注入 ---"
+echo "--- 1. 注入帳密 ---"
 mkdir -p /root/ibc
-# 準備 IBC 設定檔
 [ -f /app/ibc/config.ini ] && cp /app/ibc/config.ini /root/ibc/config.ini
-
-# 根據您的 ls，確保 jts.ini 存在於正確位置
-[ ! -f /root/Jts/jts.ini ] && cp /root/Jts/jts.ini.tmpl /root/Jts/jts.ini 2>/dev/null || touch /root/Jts/jts.ini
 
 python3 -c "
 import os, re
@@ -63,10 +63,11 @@ fluxbox -display :99 &
 x11vnc -display :99 -forever -shared -nopw -bg
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-echo "--- 3. 啟動 IB Gateway (精確指向 10.43.1a) ---"
+echo "--- 3. 啟動 IB Gateway (精確路徑模式) ---"
 export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
 
-# 這裡使用完整版本號 10.43.1a
+# 根據您的 ls 深度路徑：
+# /root/Jts/ibgateway 下面有 10.43.1a
 /opt/ibc/scripts/ibcstart.sh 10.43.1a --gateway \
   --tws-path=/root/Jts/ibgateway \
   --ibc-path=/opt/ibc \
@@ -75,12 +76,15 @@ export _JAVA_OPTIONS="-Xmx512M -Xms256M -Djava.awt.headless=false"
   --pw=${IB_PASS} \
   --mode=paper > /tmp/ibc_boot.log 2>&1 &
 
-echo "--- 4. 監控 ---"
+echo "--- 4. 啟動 Python 策略 ---"
+(sleep 60 && python3 /app/main.py > /tmp/python_app.log 2>&1) &
+
+echo "--- 5. 監控 ---"
 (while true; do 
     echo "==== [$(date)] MONITORING ===="
-    ps aux | grep java | grep -v grep || echo "⚠️ Java Gateway 尚未啟動"
+    ps aux | grep java | grep -v grep || echo "⚠️ Java Gateway 正在加載中或出錯..."
     [ -f /tmp/ibc_boot.log ] && tail -n 5 /tmp/ibc_boot.log
-    sleep 20
+    sleep 30
 done) &
 
 tail -f /dev/null
