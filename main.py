@@ -88,7 +88,7 @@ async def run_bot_loop(ib: IB):
             logger.info(f"今日跳空幅度: {gap_pct:.2f}%")
 
             if gap_pct > 2:  # 假設至少跳空 2% 
-                quantity = 100  # 請根據帳戶規模調整
+                quantity = 5  # 請根據帳戶規模調整
                 
                 # 設定突破買入單 (Stop Order)
                 buy_order = StopOrder('BUY', quantity, high_price)
