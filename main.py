@@ -129,10 +129,18 @@ async def run_bot_loop(ib: IB):
             # 標記今日已執行
             has_executed_today = True
 
+        except (ConnectionError, OSError):
+            logger.warning("檢測到連線中斷，正在重新拋出異常以觸發重連...")
+            raise  # 讓 main() 捕獲並執行重連邏輯
+
         except Exception as e:
+            if not ib.isConnected():
+                logger.warning("檢測到連線中斷 (isConnected=False)，觸發重連...")
+                raise ConnectionError("IB Disconnected")
+            
             logger.error(f"策略執行錯誤: {e}")
             await asyncio.sleep(5)
-            # 發生錯誤不跳出 while True，重試或等待
+            # 發生普通錯誤不跳出 while True，重試或等待
 
 
 async def main():
