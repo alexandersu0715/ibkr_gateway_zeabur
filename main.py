@@ -11,11 +11,11 @@ SYMBOL = 'MMM'  # 影片中提到的跳空範例股
 
 async def run_bot_loop(ib: IB):
     """
-    策略邏輯：尋早5min突破的買入策略 (PGNY)
+    策略邏輯：尋早5min突破的買入策略 (MMM)
     """
     logger.info(f"進入策略循環。交易標的: {SYMBOL}")
     
-    # 1. 定義合約 (PGNY)
+    # 1. 定義合約 (MMM)
     contract = Stock(SYMBOL, 'SMART', 'USD')
     await ib.qualifyContractsAsync(contract)
     logger.info(f"合約已確認: {contract.localSymbol}")
@@ -87,29 +87,65 @@ async def run_bot_loop(ib: IB):
             gap_pct = (first_bar.open / prev_close - 1) * 100
             logger.info(f"今日跳空幅度: {gap_pct:.2f}%")
 
-            if gap_pct > 2:  # 假設至少跳空 2% 
-                quantity = 5  # 請根據帳戶規模調整
+            if gap_pct > 2:  # 假設至少跳空 2%
+                # --- 新增區域：資金檢查與動態股數 ---
                 
-                # 設定突破買入單 (Stop Order)
-                buy_order = StopOrder('BUY', quantity, high_price)
-                logger.warning(f"設定突破單：高於 {high_price} 買入")
+                # 4.1 取得帳戶現金餘額 (TotalCashValue)
+                logger.info("正在檢查帳戶資金...")
+                acc_summary = await ib.accountSummaryAsync()
+                cash_val = 0.0
+                for item in acc_summary:
+                    if item.tag == 'TotalCashValue' and item.currency == 'USD':
+                       cash_val = float(item.value)
+                       break
                 
-                trade = ib.placeOrder(contract, buy_order)
+                logger.info(f"目前帳上現金 (TotalCashValue): {cash_val} USD")
+
+                # 4.2 計算今日已成交金額 (扣除機制)
+                today_str = datetime.now().strftime('%Y%m%d')
+                executions = await ib.reqExecutionsAsync() 
+                spent_today = 0.0
                 
-                # 5. 風險管理：設定停損於第一根 K 線低點
-                # 依範例直接掛出 (注意：若買單未成交，停損單也會掛出成為空單，這是雙向掛單邏輯嗎？)
-                # 原範例代碼：Place stop order (Buy) AND Place stop order (Sell - Quantity 100).
-                # 如果是 "買入後停損"，通常應等待成交或使用 Bracket Order。
-                # 但依據用戶提供的代碼邏輯："stop_order = StopOrder('SELL', quantity, low_price); ib.placeOrder..."
-                # 這是一個明顯的 "突破單 + 停損單" 同時掛出的邏輯。若這不是 Bracket，則可能會有裸露風險。
-                # 但我必須 "遵守參考代碼"。參考代碼就是這樣寫的。
-                # (註：Stop Sell Order 低於市價會等待觸發。如果未持有倉位，這會變成做空單。)
-                # 假設用戶清楚這點，或假設這是 Bracket 的簡化寫法? 
-                # 為了安全且符合 "策略參考"，我將忠實還原，但添加註解。
+                for fill in executions:
+                    if fill.time.strftime('%Y%m%d') == today_str:
+                        if fill.execution.side == 'BOT':
+                            cost = fill.execution.price * fill.execution.shares
+                            spent_today += cost
                 
-                stop_order = StopOrder('SELL', quantity, low_price)
-                ib.placeOrder(contract, stop_order)
-                logger.info(f"已掛設停損單於低點: {low_price}")
+                logger.info(f"今日已花費金額: {spent_today} USD")
+
+                adjusted_cash = cash_val - spent_today
+                logger.info(f"調整後可用現金: {adjusted_cash} USD (門檻: 1000 USD)")
+
+                if adjusted_cash > 1000:
+                    # 4.3 動態計算股數 (995 USD / Price)
+                    target_amt = 995
+                    quantity = int(target_amt // high_price)
+                    
+                    if quantity < 1:
+                        logger.warning(f"計算股數不足 1 股 (股價 {high_price} > {target_amt})，放棄交易。")
+                        has_executed_today = True
+                        continue
+
+                    logger.info(f"資金檢查通過。計算股數: {quantity} (以 {target_amt} USD 為基準)")
+
+                    # 設定突破買入單 (Stop Order)
+                    buy_order = StopOrder('BUY', quantity, high_price)
+                    logger.warning(f"設定突破單：高於 {high_price} 買入 {quantity} 股")
+                    
+                    trade = ib.placeOrder(contract, buy_order)
+                    
+                    # 5. 風險管理：設定停損於第一根 K 線低點
+                    stop_order = StopOrder('SELL', quantity, low_price)
+                    ib.placeOrder(contract, stop_order)
+                    logger.info(f"已掛設停損單於低點: {low_price}")
+                else:
+                    logger.warning("資金不足 (調整後現金 <= 1000 USD)，跳過今日交易。")
+                    has_executed_today = True
+                    continue
+
+                # 監控交易直到結束 
+                # (注意：這裡的 logic 會 block 住直到 trade active 結束，這可能很久)
 
                 # 監控交易直到結束 
                 # (注意：這裡的 logic 會 block 住直到 trade active 結束，這可能很久)
