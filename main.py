@@ -7,7 +7,7 @@ from ib_async import IB, Stock, LimitOrder, StopOrder
 HOST = '127.0.0.1'
 PORT = int(os.getenv('TWS_PORT', 4001))
 CLIENT_ID = int(os.getenv('IB_CLIENT_ID', 10))
-SYMBOL = 'PGNY'  # 影片中提到的跳空範例股
+SYMBOL = 'MMM'  # 影片中提到的跳空範例股
 
 async def run_bot_loop(ib: IB):
     """
