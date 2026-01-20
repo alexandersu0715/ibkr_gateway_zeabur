@@ -2,6 +2,7 @@ import asyncio
 import os
 from datetime import datetime
 from ib_async import IB, Stock, LimitOrder, StopOrder
+from loguru import logger
 
 # --- 設定區域 ---
 HOST = '127.0.0.1'
