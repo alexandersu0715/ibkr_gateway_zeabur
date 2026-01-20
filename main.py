@@ -184,6 +184,17 @@ async def main():
     主程式：負責連線管理與異常重連。
     """
     ib = IB()
+
+    # 定義連線事件回調
+    def on_connected():
+        logger.success("✅ [Event] IBKR Connected! 連線已建立。")
+
+    def on_disconnected():
+        logger.error("❌ [Event] IBKR Disconnected! 連線已中斷。")
+
+    # 註冊事件
+    ib.connectedEvent += on_connected
+    ib.disconnectedEvent += on_disconnected
     
     while True:
         try:
@@ -192,8 +203,8 @@ async def main():
                 
                 # 連線至 Gateway
                 await ib.connectAsync(HOST, PORT, clientId=CLIENT_ID, timeout=30)
-                logger.success("✅ 連線成功！")
-
+                # 連線成功後，日誌會由 on_connected 觸發
+                
                 # 重要：設定行情數據類型
                 # 3 = 延遲行情 (若您沒買即時數據，這能防止報錯)
                 # 1 = 即時行情
@@ -216,12 +227,14 @@ async def main():
         except Exception as e:
             logger.exception(f"⚠️ 發生未預期錯誤: {e}")
         finally:
-            # 確保清理舊連線
+            # 確保清理舊連線，避免狀態殘留
+            # 注意：disconnect() 不會觸發 disconnectEvent (那是對於意外斷線)
+            # 但為了保險起見，我們顯式斷開
             if ib.isConnected():
-                ib.disconnect()
+                pass # 如果還連著就不動，讓迴圈決定
             
-            # 等待重連緩衝
-            await asyncio.sleep(60)
+            # 如果是異常退出 run_bot_loop，我們稍微等待再重試
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     # 設定日誌格式
