@@ -212,13 +212,17 @@ async def main():
                 ib.reqMarketDataType(3)
                 logger.info("已設定市場數據類型為: 延遲行情 (Type 3)")
 
-                # 確認合約有效性
-                contract = Stock(SYMBOL, 'SMART', 'USD', primaryExchange='LSEETF')
+                # 確認合約有效性 (MMM 是美股，不應指定 LSEETF)
+                contract = Stock(SYMBOL, 'SMART', 'USD')
                 qualified_contracts = await ib.qualifyContractsAsync(contract)
-                if qualified_contracts:
+                
+                if qualified_contracts and qualified_contracts[0]:
                     logger.info(f"🎯 合約確認成功: {qualified_contracts[0].localSymbol}")
                 else:
                     logger.error("❌ 無法識別合約，請檢查代碼或交易所設定")
+                    # 若合約無法確認，等待並重試，避免讓後面策略崩潰
+                    await asyncio.sleep(60)
+                    continue
 
             # 啟動策略循環
             await run_bot_loop(ib)
