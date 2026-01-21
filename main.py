@@ -227,16 +227,19 @@ async def main():
             # 啟動策略循環
             await run_bot_loop(ib)
 
+        except ConnectionRefusedError:
+            logger.error("❌ 連線被拒 (Connection Refused)。IB Gateway 可能尚未啟動或已關閉。")
+            logger.warning("👉 請檢查 Zeabur 主控台日誌，確認 Gateway 是否正在重啟中或已崩潰。")
+            await asyncio.sleep(10) # 短暫等待後重試
+
         except (ConnectionError, OSError, asyncio.TimeoutError):
             logger.error("📡 連線中斷 (Connection Closed)，將在 60 秒後嘗試重連...")
         except Exception as e:
             logger.exception(f"⚠️ 發生未預期錯誤: {e}")
         finally:
             # 確保清理舊連線，避免狀態殘留
-            # 注意：disconnect() 不會觸發 disconnectEvent (那是對於意外斷線)
-            # 但為了保險起見，我們顯式斷開
             if ib.isConnected():
-                pass # 如果還連著就不動，讓迴圈決定
+                pass 
             
             # 如果是異常退出 run_bot_loop，我們稍微等待再重試
             await asyncio.sleep(5)
