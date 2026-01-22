@@ -43,6 +43,22 @@ async def run_bot_loop(ib: IB):
             # 策略邏輯開始
             # -------------------------------------------------------
             logger.info("準備執行 5 分鐘突破策略邏輯...")
+            
+            # 1.5 等待美股開盤 (09:30 ET)
+            ny_tz = pytz.timezone('US/Eastern') # Define ny_tz once per loop iteration or outside
+            while True:
+                now_ny = datetime.now(ny_tz)
+                market_open = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
+                
+                if now_ny >= market_open:
+                    logger.info(f"美股市場已開盤 (目前: {now_ny.strftime('%H:%M:%S')} ET)")
+                    break
+                else:
+                    wait_seconds = (market_open - now_ny).total_seconds()
+                    logger.warning(f"等待美股開盤 (目前: {now_ny.strftime('%H:%M:%S')} ET, 開盤: 09:30 ET)... 剩餘 {int(wait_seconds)} 秒")
+                    # 避免頻繁 log，每 60 秒檢查一次，或如果接近了就睡剛好
+                    sleep_time = min(60, wait_seconds)
+                    await asyncio.sleep(sleep_time)
 
             # 2. 獲取昨日數據 (確認是否有顯著跳空)
             logger.info("正在獲取歷史數據以計算跳空...")
@@ -73,16 +89,33 @@ async def run_bot_loop(ib: IB):
                     contract, endDateTime='', durationStr='300 S',
                     barSizeSetting='5 mins', whatToShow='TRADES', useRTH=True
                 )
+                
+                # 嚴格驗證: 必須是今天開盤後的 K 線
                 if bars_5m:
-                    first_bar = bars_5m[-1]
-                    high_price = first_bar.high
-                    low_price = first_bar.low
-                    logger.info(f"5分K完成 - 高點: {high_price}, 低點: {low_price}")
-                    break
+                    potential_bar = bars_5m[-1]
+                    # 轉換 bar 時間到 ET (IB 回傳通常是 timezone aware 或 UTC，視設定而定)
+                    # ib_async 的 bar.date 通常是 datetime (帶時區) 或 date
+                    # 這裡為了保險，比較日期
+                    bar_date = potential_bar.date
+                    if isinstance(bar_date, datetime):
+                         bar_date = bar_date.date()
+                    
+                    # Recalculate now_ny to ensure it's current for date comparison
+                    now_ny = datetime.now(ny_tz) 
+                    if bar_date == now_ny.date():
+                        first_bar = potential_bar
+                        high_price = first_bar.high
+                        low_price = first_bar.low
+                        logger.info(f"5分K完成 - 時間: {potential_bar.date} 高點: {high_price}, 低點: {low_price}")
+                        break
+                    else:
+                        logger.warning(f"取得的 K 線非今日數據 (時間: {potential_bar.date})，繼續等待今日開盤 K 線...")
                 
                 # 若尚未取得，等待 10 秒
                 if not ib.isConnected(): raise ConnectionError("IB Disconnected")
                 await asyncio.sleep(10)
+                
+
 
             # 4. 執行策略邏輯：突破第一根 K 線高點買進
             gap_pct = (first_bar.open / prev_close - 1) * 100
